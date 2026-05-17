@@ -17,6 +17,10 @@ run/
 src/generated/resources/
 mcmodsrepo/
 
+# Editor / tools
+.vscode/
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
