@@ -1,0 +1,25 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="MIT"
+issueTrackerURL="https://github.com/Akirabane/professionsmod/issues"
+
+[[mods]]
+    modId="professionsmod"
+    version="${mod_version}"
+    displayName="Professions Mod"
+    description='''Un systeme complet de metiers RPG avec arbres de competences et specialites.'''
+    authors="Akirabane"
+
+[[dependencies.professionsmod]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.professionsmod]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"

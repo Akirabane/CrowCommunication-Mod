@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(gradle *)",
+      "PowerShell(java *)",
+      "Bash(curl -L -o /tmp/jdk17.zip \"https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.11%2B9/OpenJDK17U-jdk_x64_windows_hotspot_17.0.11_9.zip\" --progress-bar)",
+      "Bash(curl -L -o \"/tmp/gradle-8.8-bin.zip\" \"https://services.gradle.org/distributions/gradle-8.8-bin.zip\" --progress-bar)",
+      "Bash(mkdir -p /tmp/gradle-install)",
+      "Read(//tmp/**)",
+      "Bash(unzip -q /tmp/gradle-8.8-bin.zip)",
+      "Bash(JAVA_HOME=\"/c/Program Files/Java/jdk-17\" /tmp/gradle-install/gradle-8.8/bin/gradle wrapper --gradle-version=8.8 -p \"D:/disque/dev/Mod minecraft\")",
+      "Bash(curl -s \"https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml\")",
+      "Bash(curl -s \"https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,v\\) for k,v in d['promos'].items\\(\\) if '1.20.1' in k]\")",
+      "Bash(JAVA_HOME=\"/c/Program Files/Java/jdk-17\" /tmp/gradle-install/gradle-8.8/bin/gradle wrapper --gradle-version=8.8)",
+      "Bash(JAVA_HOME=\"/c/Program Files/Java/jdk-17\" ./gradlew build --info)",
+      "Bash(JAVA_HOME=\"/c/Program Files/Java/jdk-17\" ./gradlew build)",
+      "Bash(cp \"D:/disque/dev/Mod minecraft/build/libs/professionsmod-1.0.0.jar\" \"C:/Users/Akirabane/curseforge/minecraft/Instances/test mod/mods/professionsmod-1.0.0.jar\")",
+      "Read(//c/Users/Akirabane/curseforge/minecraft/Instances/test mod/**)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('gameVersion:', d.get\\('gameVersion','?'\\)\\); print\\('name:', d.get\\('name','?'\\)\\)\")",
+      "PowerShell(Start-Process \"C:\\\\Users\\\\Akirabane\\\\AppData\\\\Local\\\\Overwolf\\\\PackagesCache\\\\cchhcaiapeikjbdbpfplgmpobbcdkdaphclbmkbj\\\\CurseForge.exe\")",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}

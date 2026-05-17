@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+.eclipse/
+*.iml
+.classpath
+.project
+.settings/
+
+# Forge / MDK
+run/
+src/generated/resources/
+mcmodsrepo/
+
+# OS
+.DS_Store
+Thumbs.db
