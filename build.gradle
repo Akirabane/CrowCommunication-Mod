@@ -89,6 +89,8 @@ processResources {
 
 dependencies {
     minecraft "net.minecraftforge:forge:1.20.1-${forge_version}"
+    compileOnly files("libs/mcef-forge-2.1.6-1.20.1.jar")
+    runtimeOnly files("libs/mcef-forge-2.1.6-1.20.1.jar")
 }
 
 tasks.withType(JavaCompile).configureEach {

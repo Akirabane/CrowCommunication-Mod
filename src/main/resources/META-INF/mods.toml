@@ -1,25 +1,32 @@
 modLoader="javafml"
 loaderVersion="${loader_version_range}"
 license="MIT"
-issueTrackerURL="https://github.com/Akirabane/professionsmod/issues"
+issueTrackerURL="https://github.com/Akirabane/crowcommunication/issues"
 
 [[mods]]
-    modId="professionsmod"
+    modId="crowcommunication"
     version="${mod_version}"
-    displayName="Professions Mod"
-    description='''Un systeme complet de metiers RPG avec arbres de competences et specialites.'''
+    displayName="Crow Communication Mod"
+    description='''Un système de courrier RP pour Minecraft. La commande /corbeau invoque un oiseau messager qui transporte tes lettres aux autres joueurs : interface d'écriture web, livraison temporisée selon la distance, notification toast à l'arrivée. Nécessite MCEF côté client pour l'interface.'''
     authors="Akirabane"
 
-[[dependencies.professionsmod]]
+[[dependencies.crowcommunication]]
     modId="forge"
     mandatory=true
     versionRange="${forge_version_range}"
     ordering="NONE"
     side="BOTH"
 
-[[dependencies.professionsmod]]
+[[dependencies.crowcommunication]]
     modId="minecraft"
     mandatory=true
     versionRange="${minecraft_version_range}"
     ordering="NONE"
     side="BOTH"
+
+[[dependencies.crowcommunication]]
+    modId="mcef"
+    mandatory=true
+    versionRange="[2.1.6,)"
+    ordering="BEFORE"
+    side="CLIENT"
