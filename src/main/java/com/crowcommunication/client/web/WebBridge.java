@@ -11,10 +11,13 @@ import org.cef.handler.CefDisplayHandlerAdapter;
 import java.util.function.Consumer;
 
 /**
- * Pont JS ↔ Java pour la composition du courrier.
- * Le JS publie via console.log :
- *   "PMOD::action|arg1|arg2"
- *   "PMOD::sendMsg::target::subject::body" (préserve les '|' dans le corps)
+ * Pont JS ↔ Java pour l'interface de composition du courrier.
+ *
+ * <p>Le JavaScript publie des messages via {@code console.log} selon le protocole :</p>
+ * <ul>
+ *   <li>{@code PMOD::action|arg1|arg2} — actions génériques (ready, close)</li>
+ *   <li>{@code PMOD::sendMsg::target::subject::body} — envoi effectif (les {@code ::} préservent les {@code |} dans le corps)</li>
+ * </ul>
  */
 @OnlyIn(Dist.CLIENT)
 public class WebBridge {
@@ -38,13 +41,24 @@ public class WebBridge {
         this.onClose = onClose;
     }
 
+    /**
+     * Attache le bridge au browser MCEF et installe le handler de console.
+     *
+     * @param b le browser MCEF nouvellement créé
+     */
     public void attach(MCEFBrowser b) {
         this.browser = b;
         com.cinemamod.mcef.MCEF.getClient().addDisplayHandler(displayHandler);
     }
 
+    /** Détache le bridge sans fermer le browser. */
     public void detach() { this.browser = null; }
 
+    /**
+     * Déclenche le callback de fermeture une seule fois (idempotent).
+     *
+     * @param reason {@code "sent"}, {@code "close"} ou {@code "escape"}
+     */
     public void fireClose(String reason) {
         if (closeFired) return;
         closeFired = true;

@@ -7,6 +7,11 @@ import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
 
+/**
+ * Packet client → serveur signalant l'annulation de la rédaction.
+ *
+ * <p>Déclenche le départ immédiat du corbeau d'envoi sans lettre.</p>
+ */
 public class PacketCancelLetter {
     public PacketCancelLetter() {}
     public static void encode(PacketCancelLetter p, FriendlyByteBuf buf) {}

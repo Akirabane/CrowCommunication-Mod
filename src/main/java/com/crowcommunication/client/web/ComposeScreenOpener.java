@@ -7,14 +7,26 @@ import net.minecraftforge.api.distmarker.OnlyIn;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
+/**
+ * Ouvre l'écran de composition MCEF côté client.
+ *
+ * <p>Si MCEF n'est pas disponible, annule la session et renvoie un {@link PacketCancelLetter}
+ * pour que le corbeau reparte immédiatement côté serveur.</p>
+ */
+@SuppressWarnings("null")
 @OnlyIn(Dist.CLIENT)
 public final class ComposeScreenOpener {
+
+    /**
+     * Ouvre l'interface de rédaction avec les destinataires pré-remplis.
+     *
+     * @param recipients liste de destinataires séparée par des virgules, ou chaîne vide
+     */
     public static void open(String recipients) {
         Minecraft mc = Minecraft.getInstance();
         if (!MCEFBootstrap.isReady()) {
             mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "§c§oImpossible d'ouvrir l'écran de rédaction — MCEF n'est pas disponible sur ce client."));
-            // Annuler côté serveur pour que le corbeau reparte immédiatement
+                "§c§oL'encrier du messager n'est pas prêt — impossible d'écrire pour l'instant."));
             com.crowcommunication.network.NetworkHandler.sendToServer(
                 new com.crowcommunication.network.PacketCancelLetter());
             return;

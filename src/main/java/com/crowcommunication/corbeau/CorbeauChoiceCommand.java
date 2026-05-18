@@ -9,8 +9,10 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import java.util.UUID;
 
 /**
- * Commande cachée invoquée par les boutons cliquables du chat à l'arrivée d'une lettre.
- *   /corbeau-choice <msgId> <keep|destroy>
+ * Commande interne {@code /corbeau-choice <msgId> <keep|destroy>}.
+ *
+ * <p>Invoquée exclusivement via les boutons cliquables du chat lors de la réception
+ * d'une lettre. Non destinée à être tapée manuellement par un joueur.</p>
  */
 public class CorbeauChoiceCommand {
 

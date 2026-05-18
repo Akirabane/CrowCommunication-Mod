@@ -11,6 +11,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
+/**
+ * Packet client → serveur transportant le contenu d'une lettre rédigée.
+ *
+ * <p>Le champ {@code target} est ignoré quand le serveur détecte un groupe en attente
+ * via {@link com.crowcommunication.corbeau.CorbeauManager#takePendingGroup}.</p>
+ */
+@SuppressWarnings("null")
 public class PacketSendMessage {
 
     private final String target;
@@ -40,7 +47,6 @@ public class PacketSendMessage {
             MinecraftServer server = sender.getServer();
             if (server == null) return;
 
-            // Soit on a une liste de destinataires (groupe), soit un seul depuis le formulaire
             List<String> targets = new ArrayList<>(CorbeauManager.takePendingGroup(sender));
             if (targets.isEmpty()) targets.add(p.target);
 

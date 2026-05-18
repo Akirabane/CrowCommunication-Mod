@@ -7,6 +7,12 @@ import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
 
+/**
+ * Packet serveur → client ordonnant l'ouverture de l'interface de composition.
+ *
+ * @param recipients liste de destinataires pré-remplie, séparée par des virgules (peut être vide)
+ */
+@SuppressWarnings("null")
 public class PacketOpenCompose {
 
     private final String recipients;

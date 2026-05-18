@@ -7,7 +7,12 @@ import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
 
-/** Signale au serveur que MCEF est initialisé côté client pour ce joueur. */
+/**
+ * Packet client → serveur signalant que MCEF est initialisé pour ce joueur.
+ *
+ * <p>Envoyé à la connexion et après l'initialisation asynchrone de Chromium.
+ * Permet au serveur de valider la disponibilité de l'interface avant de spawner un corbeau.</p>
+ */
 public class PacketMCEFReady {
     public PacketMCEFReady() {}
     public static void encode(PacketMCEFReady p, FriendlyByteBuf buf) {}

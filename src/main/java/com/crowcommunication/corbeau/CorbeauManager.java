@@ -3,6 +3,7 @@ package com.crowcommunication.corbeau;
 import com.crowcommunication.network.NetworkHandler;
 import com.crowcommunication.network.PacketOpenCompose;
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -32,22 +33,30 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Système de courrier par corbeau — version "livraison physique".
+ * Gestionnaire central du système de courrier par corbeau.
  *
- *  Envoi
- *    /corbeau  → corbeau d'envoi (kind SUMMON) descend chez l'expéditeur, attente, départ
- *    Submit    → message rangé en file pour le destinataire après délai (10s + dist)
+ * <h2>Cycle d'envoi</h2>
+ * <ol>
+ *   <li>{@code /corbeau} → corbeau {@code SUMMON} descend chez l'expéditeur et attend.</li>
+ *   <li>L'expéditeur soumet sa lettre → programmation d'une {@link PendingDelivery} avec délai
+ *       (10 s + distance), le corbeau {@code SUMMON} repart.</li>
+ * </ol>
  *
- *  Livraison
- *    Quand l'heure arrive, le message est mis dans la queue du destinataire
- *    Tant qu'il y a quelque chose dans la queue ET aucun corbeau de livraison actif pour ce joueur,
- *    le manager spawn un corbeau de livraison (kind DELIVERY) qui descend, ouvre la lettre,
- *    attend la décision puis repart. Le suivant prend la suite.
+ * <h2>Cycle de livraison</h2>
+ * <ol>
+ *   <li>À échéance, le message entre dans la {@link #QUEUE} du destinataire.</li>
+ *   <li>Un corbeau {@code DELIVERY} est spawné ; il descend, affiche la lettre dans le chat
+ *       et attend la décision du joueur (max 15 s).</li>
+ *   <li>Le joueur garde ou détruit la lettre ; le corbeau repart. Le message suivant suit.</li>
+ * </ol>
  *
- *  Décision
- *    Garder    → un item papier custom avec lore = corps de la lettre va dans l'inventaire
- *    Détruire  → simplement retiré, le corbeau l'emporte
+ * <h2>Timeout</h2>
+ * <p>Sans réponse en 15 s, la lettre est droppée devant l'expéditeur original et le corbeau repart.</p>
+ *
+ * <h2>Interception</h2>
+ * <p>Un corbeau {@code DELIVERY} est vulnérable : abattu à l'arc, la lettre tombe au sol.</p>
  */
+@SuppressWarnings("null")
 public class CorbeauManager {
 
     // ============================ Types ============================
@@ -110,6 +119,10 @@ public class CorbeauManager {
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
     private static final Map<UUID, Long> LAST_INTERCEPT_PING = new ConcurrentHashMap<>();
 
+    /**
+     * @param p le joueur expéditeur
+     * @return le nombre de ticks restants avant le prochain envoi autorisé, {@code 0} si disponible
+     */
     public static long cooldownRemainingTicks(ServerPlayer p) {
         Long last = LAST_SEND.get(p.getUUID());
         if (last == null) return 0;
@@ -135,13 +148,17 @@ public class CorbeauManager {
         return PENDING_GROUP.getOrDefault(p.getUUID(), Collections.emptyList());
     }
 
-    /** Palette de sceaux : 12 couleurs vives. Hash stable du nom → couleur. */
+    /** 12 couleurs de sceau ; index déterminé par hash stable du nom de l'expéditeur. */
     private static final ChatFormatting[] SEAL_COLORS = new ChatFormatting[] {
         ChatFormatting.RED, ChatFormatting.GOLD, ChatFormatting.YELLOW, ChatFormatting.GREEN,
         ChatFormatting.AQUA, ChatFormatting.BLUE, ChatFormatting.LIGHT_PURPLE, ChatFormatting.DARK_RED,
         ChatFormatting.DARK_GREEN, ChatFormatting.DARK_AQUA, ChatFormatting.DARK_PURPLE, ChatFormatting.DARK_BLUE
     };
 
+    /**
+     * @param name nom de l'expéditeur
+     * @return couleur de sceau déterministe associée à ce nom
+     */
     public static ChatFormatting sealColorFor(String name) {
         if (name == null || name.isEmpty()) return ChatFormatting.GRAY;
         int h = name.toLowerCase(Locale.ROOT).hashCode();
@@ -150,10 +167,19 @@ public class CorbeauManager {
 
     // ============================ API publique ============================
 
+    /**
+     * Valide les conditions d'envoi et spawne un corbeau {@code SUMMON} pour ce joueur.
+     *
+     * <p>Vérifie successivement : MCEF prêt, pas de corbeau d'envoi en cours, cooldown,
+     * accès au ciel, et stock de papier. Toute condition non remplie envoie un message
+     * d'erreur au joueur et annule le spawn.</p>
+     *
+     * @param player le joueur qui exécute {@code /corbeau}
+     */
     public static void summonForPlayer(ServerPlayer player) {
         if (!ClientReadyState.isReady(player)) {
             player.sendSystemMessage(Component.literal(
-                "§c§oTon client n'a pas fini de préparer le service du corbeau. Patiente quelques secondes."));
+                "§c§oLe service du corbeau n'est pas encore prêt. Patiente quelques instants."));
             return;
         }
         // Refus s'il existe déjà un corbeau d'envoi (SUMMON) en cours
@@ -170,7 +196,7 @@ public class CorbeauManager {
         if (cdLeft > 0 && !player.isCreative()) {
             long s = (cdLeft + 19) / 20;
             player.sendSystemMessage(Component.literal(
-                "§c§oTes corbeaux ont besoin de souffler — réessaie dans §f" + s + " s§c."));
+                "§c§oTes corbeaux ont besoin de souffler — reviens dans §f" + s + "§c secondes."));
             return;
         }
         // Combien de papiers ? 1 par destinataire (groupe) ou 1 par défaut.
@@ -183,6 +209,13 @@ public class CorbeauManager {
                 return;
             }
             consumePaper(player, needed);
+        }
+
+        BlockPos eyeBlock = BlockPos.containing(player.getEyePosition()).above();
+        if (!player.level().canSeeSky(eyeBlock)) {
+            player.sendSystemMessage(Component.literal(
+                "§c§oLe corbeau ne peut pas atteindre le ciel depuis ici."));
+            return;
         }
 
         Bird b = spawnBird(player, Kind.SUMMON);
@@ -238,6 +271,14 @@ public class CorbeauManager {
         synchronized (BIRDS) { BIRDS.add(b); }
     }
 
+    /**
+     * Calcule le délai de livraison en ticks : 10 s + 1 min par 1 000 blocs de distance.
+     * Sous orage, 50 % de chances que le délai soit doublé.
+     *
+     * @param sender    l'expéditeur
+     * @param recipient le destinataire
+     * @return délai en ticks avant que la lettre entre dans la queue du destinataire
+     */
     public static long computeDeliveryDelayTicks(ServerPlayer sender, ServerPlayer recipient) {
         double dist = senderDistance(sender, recipient);
         long seconds = 10L + (long) Math.floor(dist / 1000.0 * 60.0);
@@ -253,6 +294,11 @@ public class CorbeauManager {
         return ticks;
     }
 
+    /**
+     * Distance entre deux joueurs. Retourne {@code 5000} s'ils sont dans des dimensions différentes.
+     *
+     * @return distance en blocs
+     */
     public static double senderDistance(ServerPlayer sender, ServerPlayer recipient) {
         if (sender.level().dimension().equals(recipient.level().dimension()))
             return sender.position().distanceTo(recipient.position());
@@ -267,6 +313,16 @@ public class CorbeauManager {
         return null;
     }
 
+    /**
+     * Programme la livraison d'une lettre après un délai.
+     *
+     * @param server     le serveur Minecraft
+     * @param recipient  le joueur destinataire
+     * @param senderName nom affiché de l'expéditeur
+     * @param subject    objet de la lettre
+     * @param body       corps de la lettre
+     * @param delayTicks délai en ticks avant l'entrée en queue
+     */
     public static void scheduleDelivery(MinecraftServer server, ServerPlayer recipient,
                                         String senderName, String subject, String body, long delayTicks) {
         long deliverAt = server.getTickCount() + delayTicks;
@@ -276,7 +332,13 @@ public class CorbeauManager {
         }
     }
 
-    /** Le client a tranché : on retire l'oiseau et on délivre l'item papier si demandé. */
+    /**
+     * Traite la décision du destinataire (garder ou détruire la lettre).
+     *
+     * @param player le joueur destinataire
+     * @param msgId  l'identifiant du message affiché
+     * @param keep   {@code true} pour conserver la lettre en item, {@code false} pour la détruire
+     */
     public static void onLetterDecision(ServerPlayer player, UUID msgId, boolean keep) {
         System.out.println("[Corbeau] onLetterDecision player=" + player.getGameProfile().getName()
             + " msgId=" + msgId + " keep=" + keep);
@@ -314,11 +376,10 @@ public class CorbeauManager {
 
     /** Candidats de remplacement, par ordre de préférence. Premier trouvé = utilisé. */
     private static final ResourceLocation[] MESSENGER_CANDIDATES = new ResourceLocation[] {
-        new ResourceLocation("naturalist", "sparrow"),   // priorité : moineau (Naturalist)
-        new ResourceLocation("naturalist", "finch"),
-        new ResourceLocation("naturalist", "robin"),
-        new ResourceLocation("naturalist", "bluejay"),
-        new ResourceLocation("alexsmobs",   "crow"),     // fallback Alex's Mobs si présent
+        ResourceLocation.fromNamespaceAndPath("naturalist", "sparrow"),   // priorité : moineau (Naturalist)
+        ResourceLocation.fromNamespaceAndPath("naturalist", "finch"),
+        ResourceLocation.fromNamespaceAndPath("naturalist", "robin"),
+        ResourceLocation.fromNamespaceAndPath("naturalist", "bluejay")
     };
 
     @SuppressWarnings("unchecked")
@@ -582,7 +643,6 @@ public class CorbeauManager {
         String sealChar = "§" + seal.getChar() + "● ";
         Component header = Component.literal("§6───────── §e§l✉ §6§lUne lettre §6─────────");
         Component meta = Component.literal(sealChar + "§7De §b" + b.sender + " §7· §f§o" + b.subject);
-        Component body = Component.literal("§7§o\"" + b.body + "§7§o\"");
 
         MutableJoin actions = new MutableJoin();
         actions.add(Component.literal("§a§l[ Garder la lettre ]")
@@ -590,7 +650,7 @@ public class CorbeauManager {
             .withStyle(s -> s
                 .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, cmdBase + "keep"))
                 .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                    Component.literal("§fGarde une copie de la lettre dans ton inventaire (papier rose).")))));
+                    Component.literal("§fGlisse la lettre dans ta besace — elle y restera, froissée de voyage.")))));
         actions.add(Component.literal("   "));
         actions.add(Component.literal("§c§l[ La détruire ]")
             .copy()
@@ -636,22 +696,26 @@ public class CorbeauManager {
         // Timeout 15s : si pas de réponse, le corbeau repart avec la lettre.
         if (b.ticks > 20 * 15) {
             if (b.kind == Kind.DELIVERY) {
-                // Retour à l'expéditeur : on reschedule une livraison vers le sender original
+                // Retour à l'expéditeur : on lui rend la lettre directement, sans nouvelle livraison.
                 MinecraftServer server = b.player.getServer();
                 ServerPlayer originalSender = (server == null) ? null
                     : server.getPlayerList().getPlayerByName(b.sender);
                 if (originalSender != null) {
-                    String returnBody = "Ton corbeau est revenu sans réponse — §o"
-                        + b.player.getGameProfile().getName()
-                        + "§r n'a pas pris la lettre.\n\n— Lettre originale —\n" + b.body;
-                    long delay = computeDeliveryDelayTicks(originalSender, b.player);
-                    scheduleDelivery(server, originalSender,
-                        b.player.getGameProfile().getName(),
-                        "↩ Retour : " + b.subject,
-                        returnBody, delay);
+                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
+                    Vec3 front = originalSender.getEyePosition()
+                        .add(originalSender.getLookAngle().scale(1.5)).add(0, -0.5, 0);
+                    if (originalSender.level() instanceof ServerLevel sl) {
+                        ItemEntity drop = new ItemEntity(sl,
+                            front.x, front.y, front.z, returned);
+                        drop.setDeltaMovement(0, 0.12, 0);
+                        sl.addFreshEntity(drop);
+                    }
+                    originalSender.sendSystemMessage(Component.literal(
+                        "§8§oLe corbeau est revenu — §f" + b.player.getGameProfile().getName()
+                        + "§8§o n'a pas pris ta lettre, elle est tombée devant toi."));
                 }
                 b.player.sendSystemMessage(Component.literal(
-                    "§8§oLasse d'attendre, le corbeau s'envole — il rapportera la lettre à son expéditeur."));
+                    "§8§oLasse d'attendre, le corbeau s'envole — il rapporte la lettre à son expéditeur."));
             } else {
                 b.player.sendSystemMessage(Component.literal(
                     "§8§oLasse d'attendre, le corbeau s'envole avec sa lettre."));

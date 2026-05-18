@@ -14,6 +14,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Enregistre les commandes {@code /corbeau} et {@code /corbeau-groupe}.
+ *
+ * <p>{@code /corbeau <pseudo>} envoie une lettre à un joueur.
+ * {@code /corbeau-groupe <pseudo1> <pseudo2> ...} envoie à plusieurs joueurs (max 8),
+ * chacun recevant un corbeau individuel.</p>
+ */
+@SuppressWarnings("null")
 public class CorbeauCommand {
 
     @SubscribeEvent
@@ -21,6 +29,11 @@ public class CorbeauCommand {
         register(event.getDispatcher());
     }
 
+    /**
+     * Enregistre les deux littéraux de commande dans le dispatcher Brigadier.
+     *
+     * @param dispatcher le dispatcher Brigadier du serveur
+     */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("corbeau")
             .then(Commands.argument("destinataire", StringArgumentType.word())

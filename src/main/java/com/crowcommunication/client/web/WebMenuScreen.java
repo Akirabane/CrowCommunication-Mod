@@ -12,6 +12,14 @@ import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
+/**
+ * Écran Minecraft hébergeant le browser MCEF pour la composition d'une lettre.
+ *
+ * <p>Le rendu clippe le contenu Chromium via scissor plutôt que via la transparence CEF,
+ * non fiable sur cette version de MCEF. La zone de clip reproduit exactement le layout CSS :
+ * {@code width: min(680px, 92vw); margin: 5vh auto 0}.</p>
+ */
+@SuppressWarnings("null")
 @OnlyIn(Dist.CLIENT)
 public class WebMenuScreen extends Screen {
 
@@ -34,7 +42,7 @@ public class WebMenuScreen extends Screen {
             bridge.attach(browser);
         }
         resizeBrowser();
-        // Donne le focus clavier au browser — sans ça les inputs HTML ne reçoivent rien
+        // setFocus indispensable : sans ça les champs HTML ne reçoivent aucune frappe clavier
         try { browser.setFocus(true); } catch (Throwable ignored) {}
     }
 
@@ -71,17 +79,16 @@ public class WebMenuScreen extends Screen {
             g.drawCenteredString(this.font, msg, this.width / 2, this.height / 2, 0xFFFFFFFF);
             return;
         }
-        // La transparence MCEF n'est pas fiable — on clippe le rendu à la zone de la lettre.
-        // Le monde Minecraft reste visible autour sans qu'on ait besoin de transparency CEF.
         double s = minecraft.getWindow().getGuiScale();
-        int bw = (int)(this.width  * s); // largeur viewport navigateur en pixels réels
+        // Dimensions en pixels physiques (référentiel CEF)
+        int bw = (int)(this.width  * s);
         int bh = (int)(this.height * s);
-        // Reproduit exactement le calcul CSS : width: min(680px, 92vw) ; margin: 5vh auto 0
+        // Reproduit le layout CSS : width: min(680px, 92vw) ; margin: 5vh auto 0
         int lw = Math.min(680, (int)(bw * 0.92));
         int lh = Math.min(700, bh - (int)(bh * 0.05));
         int lx = (bw - lw) / 2;
         int ly = (int)(bh * 0.05);
-        // Conversion en unités GUI (ce que GuiGraphics.enableScissor attend)
+        // Repasser en unités GUI pour GuiGraphics.enableScissor
         int gx = (int)(lx / s);
         int gy = (int)(ly / s);
         int gw = (int)(lw / s);
@@ -101,7 +108,7 @@ public class WebMenuScreen extends Screen {
         Tesselator t = Tesselator.getInstance();
         BufferBuilder b = t.getBuilder();
         b.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-        // UVs (0,1)→(1,0) car la texture CEF est inversée verticalement
+        // UVs V inversés (0↔1) : la texture CEF est rendue à l'envers verticalement
         b.vertex(0,           this.height, 0).uv(0, 1).color(255,255,255,255).endVertex();
         b.vertex(this.width,  this.height, 0).uv(1, 1).color(255,255,255,255).endVertex();
         b.vertex(this.width,  0,           0).uv(1, 0).color(255,255,255,255).endVertex();
@@ -112,15 +119,16 @@ public class WebMenuScreen extends Screen {
         RenderSystem.enableDepthTest();
     }
 
-    // ----- Coordonnées MC scaled → pixels écran -----
+    /** Convertit une coordonnée X GUI en pixels physiques pour CEF. */
     private int px(double mx) { return (int)(mx * this.minecraft.getWindow().getGuiScale()); }
+
+    /** Convertit une coordonnée Y GUI en pixels physiques pour CEF. */
     private int py(double my) { return (int)(my * this.minecraft.getWindow().getGuiScale()); }
 
-    // ----- Forwarding des événements -----
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
         if (browser != null) {
-            // CEF a besoin que la position souris soit à jour avant le press
+            // sendMouseMove doit précéder sendMousePress : CEF requiert la position à jour
             browser.sendMouseMove(px(mx), py(my));
             browser.sendMousePress(px(mx), py(my), btn);
         }

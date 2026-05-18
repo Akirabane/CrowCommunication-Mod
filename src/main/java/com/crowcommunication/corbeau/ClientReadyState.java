@@ -9,16 +9,23 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Suivi serveur : pour chaque joueur, savoir si son client a fini d'initialiser MCEF.
- * Sans ça, /corbeau peut spawner un oiseau alors que l'UI n'est pas chargeable côté client.
+ * Registre serveur des joueurs dont le client a terminé l'initialisation de MCEF.
+ *
+ * <p>Sans ce suivi, {@code /corbeau} pourrait invoquer un oiseau alors que l'interface
+ * de composition n'est pas encore disponible côté client.</p>
  */
 public class ClientReadyState {
 
     private static final Set<UUID> READY = ConcurrentHashMap.newKeySet();
 
-    public static void setReady(ServerPlayer p)        { READY.add(p.getUUID()); }
-    public static boolean isReady(ServerPlayer p)      { return READY.contains(p.getUUID()); }
-    public static void clear(ServerPlayer p)           { READY.remove(p.getUUID()); }
+    /** Marque le joueur comme prêt à recevoir l'interface MCEF. */
+    public static void setReady(ServerPlayer p)   { READY.add(p.getUUID()); }
+
+    /** @return {@code true} si le client du joueur a signalé MCEF comme initialisé. */
+    public static boolean isReady(ServerPlayer p) { return READY.contains(p.getUUID()); }
+
+    /** Retire le joueur du registre (déconnexion). */
+    public static void clear(ServerPlayer p)      { READY.remove(p.getUUID()); }
 
     @SubscribeEvent
     public static void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {

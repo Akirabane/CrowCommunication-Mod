@@ -8,9 +8,14 @@ import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
+/**
+ * Mod entry point for Crow Communication.
+ * Registers all event listeners and initialises the network channel.
+ */
 @Mod(CrowCommunicationMod.MODID)
 public class CrowCommunicationMod {
 
+    /** Forge mod identifier. Must match {@code mods.toml} and all {@link net.minecraft.resources.ResourceLocation} usages. */
     public static final String MODID = "crowcommunication";
 
     public CrowCommunicationMod() {
