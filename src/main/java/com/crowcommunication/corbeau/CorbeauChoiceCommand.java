@@ -1,12 +1,13 @@
 package com.crowcommunication.corbeau;
 
+import java.util.UUID;
+
 import com.mojang.brigadier.arguments.StringArgumentType;
+
 import net.minecraft.commands.Commands;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-
-import java.util.UUID;
 
 /**
  * Commande interne {@code /corbeau-choice <msgId> <keep|destroy>}.

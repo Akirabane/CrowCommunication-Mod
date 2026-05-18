@@ -73,9 +73,9 @@ public class CorbeauManager {
     private enum Phase { INCOMING, WAITING, OUTGOING }
 
     private static final class Bird {
-        final Kind kind;
+        Kind kind;
         final Mob chicken;
-        final ServerPlayer player;
+        ServerPlayer player;
         final Vec3 origin;
         Phase phase;
         int ticks;
@@ -94,6 +94,8 @@ public class CorbeauManager {
         String outSubject, outBody;
         /** Durée totale de vol pour un SUMMON OUTGOING porteur — calée sur le délai de livraison. */
         long outgoingDurationTicks;
+        /** Position de décollage capturée à l'instant où l'oiseau passe en OUTGOING (départ depuis l'expéditeur). */
+        Vec3 outgoingFrom;
         /** Vrai si ce corbeau de livraison transporte une lettre retournée (le destinataire AFK la renvoie). */
         boolean isReturn;
 
@@ -269,6 +271,7 @@ public class CorbeauManager {
             for (Bird b : BIRDS) {
                 if (b.player != player || b.kind != Kind.SUMMON || b.phase != Phase.WAITING) continue;
                 b.phase = Phase.OUTGOING; b.ticks = 0;
+                b.outgoingFrom = b.chicken.position();
                 Vec3 fallback = player.getLookAngle().reverse();
                 Vec3 dir = useRecipientDir ? departureDir(player, b.recipientName, fallback) : fallback;
                 b.flyTo = player.getEyePosition().add(dir.x * horizontal, vertical, dir.z * horizontal);
@@ -652,6 +655,11 @@ Details:
         synchronized (PENDING) {
             PENDING.removeIf(d -> ids.contains(d.msgId));
         }
+        // Si le timing a déjà fait passer le message PENDING → QUEUE, le retirer aussi
+        // pour qu'aucun corbeau de livraison ne spawne malgré l'annulation.
+        for (Deque<QueuedMessage> q : QUEUE.values()) {
+            q.removeIf(m -> ids.contains(m.id));
+        }
     }
 
     /**
@@ -785,6 +793,13 @@ Details:
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
                 if (b.kind == Kind.DELIVERY && b.player == p) return true;
+                // Un SUMMON OUTGOING porteur vers ce destinataire compte aussi —
+                // il livrera en place à l'arrivée, pas besoin d'en spawner un nouveau.
+                if (b.kind == Kind.SUMMON && b.phase == Phase.OUTGOING
+                        && b.outSubject != null && b.recipientName != null
+                        && b.recipientName.equalsIgnoreCase(p.getGameProfile().getName())) {
+                    return true;
+                }
             }
         }
         return false;
@@ -926,30 +941,56 @@ Details:
                 }
                 spawnFeatherTrail(b.chicken);
 
-                boolean carryingLetter = b.kind == Kind.SUMMON
-                    && b.outSubject != null && b.outgoingDurationTicks > 0 && b.recipientName != null;
+                boolean carryingLetter = b.outSubject != null
+                    && b.outgoingDurationTicks > 0 && b.recipientName != null
+                    && (b.kind == Kind.SUMMON || b.isReturn);
 
                 if (carryingLetter) {
-                    // Le corbeau suit le destinataire en temps réel — vitesse calée pour
-                    // arriver à l'instant de livraison. Il reste vulnérable (interceptable).
+                    // Vol garanti sur toute la durée : montée vers la couche de croisière,
+                    // croisière horizontale tranquille, descente sur le destinataire vivant.
+                    // L'oiseau reste interceptable et ne disparaît qu'à l'instant pile de livraison.
                     MinecraftServer server = b.player.getServer();
                     ServerPlayer recipient = (server == null)
                         ? null : server.getPlayerList().getPlayerByName(b.recipientName);
-                    Vec3 targetPos;
+                    Vec3 from = b.outgoingFrom != null ? b.outgoingFrom : b.chicken.position();
+                    double targetX, targetZ, targetY;
                     if (recipient != null && !recipient.isRemoved()
                             && recipient.level().dimension().equals(b.chicken.level().dimension())) {
-                        targetPos = recipient.position().add(0, 1.6, 0);
+                        targetX = recipient.getX();
+                        targetZ = recipient.getZ();
+                        targetY = recipient.getY() + 1.6;
                     } else {
-                        targetPos = b.flyTo; // dernière direction connue, fallback
+                        targetX = b.flyTo.x;
+                        targetZ = b.flyTo.z;
+                        targetY = b.flyTo.y;
                     }
-                    long ticksRemaining = Math.max(1L, b.outgoingDurationTicks - b.ticks);
-                    double distRemaining = b.chicken.position().distanceTo(targetPos);
-                    double speed = Math.max(0.4, Math.min(2.5, distRemaining / ticksRemaining));
-                    boolean reached = moveTowardWithArc(b.chicken, targetPos, speed);
-                    if (reached || b.ticks >= b.outgoingDurationTicks) {
-                        poof(b.chicken);
-                        b.chicken.discard();
-                        toRemove.add(b);
+                    double cruiseY = Math.max(100.0, Math.max(from.y, targetY) + 18.0);
+                    long total = Math.max(20L, b.outgoingDurationTicks);
+                    double progress = Math.min(1.0, b.ticks / (double) total);
+                    double kxz = easeInOut(progress);
+                    double desiredX = from.x + (targetX - from.x) * kxz;
+                    double desiredZ = from.z + (targetZ - from.z) * kxz;
+                    double desiredY;
+                    if (progress < 0.20) {
+                        double k = progress / 0.20;
+                        desiredY = from.y + (cruiseY - from.y) * easeOutCubic(k);
+                    } else if (progress > 0.80) {
+                        double k = (progress - 0.80) / 0.20;
+                        desiredY = cruiseY + (targetY - cruiseY) * easeOutCubic(k);
+                    } else {
+                        desiredY = cruiseY + Math.sin(b.ticks * 0.12) * 0.35;
+                    }
+                    Vec3 cur = b.chicken.position();
+                    Vec3 desired = new Vec3(desiredX, desiredY, desiredZ);
+                    Vec3 step = desired.subtract(cur);
+                    double stepLen = step.length();
+                    if (stepLen > 2.8) step = step.normalize().scale(2.8);
+                    Vec3 newPos = cur.add(step);
+                    Vec3 yawStep = new Vec3(desired.x - cur.x, 0, desired.z - cur.z);
+                    float yaw = yawStep.lengthSqr() > 0.01 ? computeYaw(yawStep) : b.chicken.getYRot();
+                    b.chicken.moveTo(newPos.x, newPos.y, newPos.z, yaw, -10f);
+                    if (b.ticks >= b.outgoingDurationTicks) {
+                        arriveCarrying(b, recipient, toRemove);
                     }
                 } else {
                     // OUTGOING simple (annulation / sans lettre) — vol bref de repli.
@@ -961,6 +1002,57 @@ Details:
                 }
             }
         }
+    }
+
+    /**
+     * Conversion en place à l'arrivée d'un corbeau porteur (SUMMON livrant au destinataire, ou
+     * DELIVERY de retour livrant à l'expéditeur initial). Le même oiseau reste en jeu et
+     * passe en WAITING auprès du nouvel interlocuteur — pas de poof, pas de bird dupliqué.
+     */
+    private static void arriveCarrying(Bird b, ServerPlayer recipient, List<Bird> toRemove) {
+        boolean wasReturn = b.isReturn;
+        String senderName = wasReturn ? b.sender : b.player.getGameProfile().getName();
+        UUID msgId = (b.deliveryIds != null && !b.deliveryIds.isEmpty()) ? b.deliveryIds.get(0)
+                   : (b.msgId != null ? b.msgId : UUID.randomUUID());
+        String subject = b.outSubject;
+        String body = b.outBody;
+
+        // Si le destinataire n'est pas joignable : on laisse le système PENDING/QUEUE faire le fallback.
+        if (recipient == null || recipient.isRemoved()
+                || !recipient.level().dimension().equals(b.chicken.level().dimension())) {
+            poof(b.chicken);
+            b.chicken.discard();
+            toRemove.add(b);
+            return;
+        }
+
+        // Le bird arrivé prend en charge la livraison — on annule l'éventuel PENDING/QUEUE doublon.
+        if (b.deliveryIds != null && !b.deliveryIds.isEmpty()) {
+            cancelDeliveries(b.deliveryIds);
+            Deque<QueuedMessage> q = QUEUE.get(recipient.getUUID());
+            if (q != null) q.removeIf(m -> b.deliveryIds.contains(m.id));
+        }
+
+        b.kind = Kind.DELIVERY;
+        b.player = recipient;
+        b.phase = Phase.WAITING;
+        b.ticks = 0;
+        b.msgId = msgId;
+        b.sender = senderName;
+        b.subject = subject;
+        b.body = body;
+        b.isReturn = wasReturn;
+        b.outSubject = null;
+        b.outBody = null;
+        b.outgoingDurationTicks = 0;
+        b.deliveryIds = null;
+        b.chicken.setInvulnerable(false);
+        b.chicken.setDeltaMovement(Vec3.ZERO);
+
+        recipient.sendSystemMessage(Component.literal(wasReturn
+            ? "§8§oTon corbeau revient — il rapporte la lettre que tu avais envoyée..."
+            : "§8§oUn corbeau se pose près de toi, une lettre attachée à la patte..."));
+        onArrived(b);
     }
 
     private static void tickIncoming(Bird b) {
@@ -1100,33 +1192,55 @@ Details:
         int timeoutTicks = b.kind == Kind.DELIVERY ? 20 * 15 : 20 * 60 * 10;
         if (b.ticks > timeoutTicks) {
             if (b.kind == Kind.DELIVERY && !b.isReturn) {
-                // Premier timeout — la lettre est renvoyée à l'expéditeur comme une nouvelle livraison.
+                // AFK : demi-tour en place — le même corbeau reprend son vol vers l'expéditeur initial.
                 MinecraftServer server = b.player.getServer();
-                UUID originalSenderUUID = null;
-                if (server != null) {
-                    ServerPlayer online = server.getPlayerList().getPlayerByName(b.sender);
-                    if (online != null) {
-                        originalSenderUUID = online.getUUID();
-                    } else {
-                        try {
-                            originalSenderUUID = server.getProfileCache()
-                                .get(b.sender).map(prof -> prof.getId()).orElse(null);
-                        } catch (Throwable ignored) {}
-                    }
+                ServerPlayer originalSender = (server == null) ? null
+                    : server.getPlayerList().getPlayerByName(b.sender);
+                if (originalSender != null && !originalSender.isRemoved()
+                        && originalSender.level().dimension().equals(b.chicken.level().dimension())) {
+                    String recipientName = b.player.getGameProfile().getName();
+                    b.player.sendSystemMessage(Component.literal(
+                        "§8§oLasse d'attendre, le corbeau s'envole — il rapporte la lettre à son expéditeur."));
+                    String origSubject = b.subject;
+                    String origBody = b.body;
+                    String origSenderName = b.sender;
+                    b.player = originalSender;
+                    b.recipientName = origSenderName;
+                    b.sender = recipientName;
+                    b.outSubject = origSubject;
+                    b.outBody = origBody;
+                    b.isReturn = true;
+                    long delayTicks = Math.max(20L * 5L,
+                        computeDeliveryDelayTicks(b.player, originalSender));
+                    b.outgoingDurationTicks = delayTicks;
+                    b.outgoingFrom = b.chicken.position();
+                    b.deliveryIds = null;
+                    b.phase = Phase.OUTGOING;
+                    b.ticks = 0;
+                    Vec3 dir = originalSender.position().subtract(b.chicken.position());
+                    if (dir.lengthSqr() < 1e-3) dir = originalSender.getLookAngle();
+                    b.flyTo = originalSender.position().add(0, 1.6, 0);
+                    return;
                 }
-                if (server != null && originalSenderUUID != null) {
-                    scheduleReturnDelivery(server, originalSenderUUID, b.sender, b.subject, b.body, 20L * 10L);
-                }
-                b.player.sendSystemMessage(Component.literal(
-                    "§8§oLasse d'attendre, le corbeau s'envole — il rapporte la lettre à son expéditeur."));
-            } else if (b.kind == Kind.DELIVERY && b.isReturn) {
-                // Second timeout (retour ignoré) — la lettre tombe au sol devant l'expéditeur, sans auto-ramassage.
+                // Expéditeur introuvable — la lettre tombe au sol devant le destinataire.
                 if (b.player.level() instanceof ServerLevel sl) {
                     Vec3 dropPos = b.chicken.position().add(0, -0.5, 0);
                     ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
                     ItemEntity drop = new ItemEntity(sl, dropPos.x, dropPos.y, dropPos.z, returned);
                     drop.setDeltaMovement(0, 0.05, 0);
-                    drop.setPickUpDelay(60); // 3 s avant qu'on puisse la ramasser, pour qu'elle soit visible
+                    drop.setPickUpDelay(60);
+                    sl.addFreshEntity(drop);
+                }
+                b.player.sendSystemMessage(Component.literal(
+                    "§8§oLa lettre a glissé du bec du corbeau — elle est tombée à terre devant toi."));
+            } else if (b.kind == Kind.DELIVERY && b.isReturn) {
+                // Retour ignoré par l'expéditeur — la lettre tombe à ses pieds.
+                if (b.player.level() instanceof ServerLevel sl) {
+                    Vec3 dropPos = b.chicken.position().add(0, -0.5, 0);
+                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
+                    ItemEntity drop = new ItemEntity(sl, dropPos.x, dropPos.y, dropPos.z, returned);
+                    drop.setDeltaMovement(0, 0.05, 0);
+                    drop.setPickUpDelay(60);
                     sl.addFreshEntity(drop);
                 }
                 b.player.sendSystemMessage(Component.literal(
@@ -1214,6 +1328,10 @@ Details:
     // ============================ Math/move ============================
 
     private static double easeOutCubic(double t) { double i = 1 - t; return 1 - i * i * i; }
+
+    private static double easeInOut(double t) {
+        return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
 
     private static float computeYaw(Vec3 step) {
         if (step.lengthSqr() < 1e-6) return 0;

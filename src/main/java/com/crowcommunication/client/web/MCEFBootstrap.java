@@ -52,8 +52,14 @@ public final class MCEFBootstrap {
         }
     }
 
-    /** @return {@code true} si Chromium est initialisé et MCEF prêt à créer un browser. */
-    public static boolean isReady() { return ready && MCEF.isInitialized(); }
+    /**
+     * @return {@code true} si Chromium est initialisé et MCEF prêt à créer un browser.
+     *
+     * <p>Ne s'appuie que sur le flag {@code ready} posé par le callback {@code scheduleForInit}.
+     * Doubler la garde avec {@code MCEF.isInitialized()} provoquait des faux négatifs juste après
+     * la fermeture d'un browser précédent (état transitoire entre deux instances).</p>
+     */
+    public static boolean isReady() { return ready; }
 
     /**
      * Envoie {@link com.crowcommunication.network.PacketMCEFReady} au serveur si une connexion est active.
