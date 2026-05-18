@@ -16,9 +16,6 @@ import com.crowcommunication.network.PacketOpenCompose;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
@@ -171,13 +168,8 @@ public class CorbeauManager {
     public static final long COOLDOWN_TICKS = 20L * 120L;          // 2 min entre deux envois
     public static final double MAX_DELIVERY_DISTANCE = 1500.0;     // au-delà : "le corbeau s'est perdu"
     public static final double INTERCEPT_RADIUS = 32.0;            // joueurs tiers qui entendent passer
-    /** Cooldown spécifique aux tentatives d'usurpation : 30 min. */
-    public static final long FORGE_COOLDOWN_TICKS = 20L * 60L * 30L;
-    /** Probabilité serveur d'usurpation effective une fois le QTE réussi côté client. */
-    public static final double FORGE_SUCCESS_CHANCE = 0.30;
 
     private static final Map<UUID, Long> LAST_SEND = new ConcurrentHashMap<>();
-    private static final Map<UUID, Long> LAST_FORGE_ATTEMPT = new ConcurrentHashMap<>();
     /** Liste de destinataires en attente pour le prochain envoi d'un joueur (après /corbeau-groupe). */
     private static final Map<UUID, List<String>> PENDING_GROUP = new ConcurrentHashMap<>();
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
@@ -231,93 +223,14 @@ public class CorbeauManager {
         if (p.getServer() != null) LAST_SEND.put(p.getUUID(), (long) p.getServer().getTickCount());
     }
 
-    /** Cooldown d'usurpation restant en ticks pour ce joueur (0 si disponible). */
+    /** Façade vers {@link ForgerySystem#cooldownRemainingTicks(ServerPlayer)}. */
     public static long forgeCooldownRemainingTicks(ServerPlayer p) {
-        Long last = LAST_FORGE_ATTEMPT.get(p.getUUID());
-        MinecraftServer srv = p.getServer();
-        if (last == null || srv == null) return 0;
-        long left = FORGE_COOLDOWN_TICKS - (srv.getTickCount() - last);
-        return Math.max(0, left);
+        return ForgerySystem.cooldownRemainingTicks(p);
     }
 
-    /**
-     * Résout le nom à afficher au destinataire :
-     * <ul>
-     *   <li>Si {@code forgeName} est vide → renvoie le vrai pseudo (pas de tentative)</li>
-     *   <li>Si {@code forgeName} est le pseudo de l'expéditeur → renvoie le vrai pseudo (no-op)</li>
-     *   <li>Si cooldown 30 min actif → renvoie le vrai pseudo + message d'avertissement (tentative bloquée)</li>
-     *   <li>Sinon → tirage {@link #FORGE_SUCCESS_CHANCE} (30%) ; usurpation réussie ou non, le cooldown est posé</li>
-     * </ul>
-     */
+    /** Façade vers {@link ForgerySystem#resolveDisplaySender(ServerPlayer, String)}. */
     public static String resolveDisplaySender(ServerPlayer sender, String forgeName) {
-        String real = sender.getGameProfile().getName();
-        if (forgeName == null || forgeName.isBlank()) return real;
-        String target = forgeName.trim();
-        if (target.equalsIgnoreCase(real)) return real;
-
-        MinecraftServer server = sender.getServer();
-        // Validation : le pseudo doit correspondre à un profil connu (en ligne ou en cache).
-        // Sinon la tentative est purement silencieuse, sans coût ni cooldown.
-        if (server == null) return real;
-        boolean known = server.getPlayerList().getPlayerByName(target) != null;
-        if (!known) {
-            try {
-                known = server.getProfileCache() != null
-                    && server.getProfileCache().get(target).isPresent();
-            } catch (Throwable ignored) {}
-        }
-        if (!known) {
-            sender.sendSystemMessage(Component.literal(
-                "§8§oTu n'arrives pas à imiter un sceau que tu n'as jamais vu — §f" + target + "§8 t'est inconnu."));
-            return real;
-        }
-
-        long now = server.getTickCount();
-        Long last = LAST_FORGE_ATTEMPT.get(sender.getUUID());
-        if (last != null && now - last < FORGE_COOLDOWN_TICKS) {
-            long secLeft = (FORGE_COOLDOWN_TICKS - (now - last)) / 20L;
-            long minLeft = (secLeft + 59) / 60L;
-            sender.sendSystemMessage(Component.literal(
-                "§c§oTes mains tremblent encore — tu ne peux pas usurper un sceau avant §f" + minLeft + " min§c."));
-            return real;
-        }
-        LAST_FORGE_ATTEMPT.put(sender.getUUID(), now);
-
-        boolean success = sender.getRandom().nextDouble() < FORGE_SUCCESS_CHANCE;
-        if (success) {
-            sender.sendSystemMessage(Component.literal(
-                "§6§oTon trait de plume imite à la perfection le sceau de §f" + target + "§6..."));
-            playForgeFeedback(sender, true);
-            return target;
-        }
-        sender.sendSystemMessage(Component.literal(
-            "§8§oTa tentative d'imiter le sceau de §f" + target + "§8 a raté — la lettre part sous ton vrai nom."));
-        playForgeFeedback(sender, false);
-        return real;
-    }
-
-    /** Effets RP du résultat d'usurpation — visibles uniquement par l'expéditeur. */
-    private static void playForgeFeedback(ServerPlayer sender, boolean success) {
-        if (!(sender.level() instanceof ServerLevel sl)) return;
-        Vec3 p = sender.position().add(0, 1.2, 0);
-        if (success) {
-            // Cling de cire qui prend — note dorée + particules d'éclat
-            sl.playSound(null, sender.blockPosition(),
-                SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.PLAYERS, 0.6f, 1.6f);
-            sl.playSound(null, sender.blockPosition(),
-                SoundEvents.AMETHYST_BLOCK_CHIME, SoundSource.PLAYERS, 0.5f, 1.4f);
-            sl.sendParticles(ParticleTypes.END_ROD,  p.x, p.y, p.z, 10, 0.4, 0.4, 0.4, 0.02);
-            sl.sendParticles(ParticleTypes.GLOW,     p.x, p.y, p.z, 16, 0.5, 0.5, 0.5, 0.03);
-            sl.sendParticles(ParticleTypes.FLAME,    p.x, p.y, p.z,  6, 0.3, 0.3, 0.3, 0.01);
-        } else {
-            // Plume cassée — note grave + particules sombres
-            sl.playSound(null, sender.blockPosition(),
-                SoundEvents.WOOL_BREAK, SoundSource.PLAYERS, 0.7f, 0.7f);
-            sl.playSound(null, sender.blockPosition(),
-                SoundEvents.NOTE_BLOCK_BASEDRUM.value(), SoundSource.PLAYERS, 0.5f, 0.6f);
-            sl.sendParticles(ParticleTypes.SMOKE,    p.x, p.y, p.z, 14, 0.4, 0.4, 0.4, 0.02);
-            sl.sendParticles(ParticleTypes.ASH,      p.x, p.y, p.z, 18, 0.5, 0.4, 0.5, 0.03);
-        }
+        return ForgerySystem.resolveDisplaySender(sender, forgeName);
     }
 
     public static void setPendingGroup(ServerPlayer p, List<String> names) {
@@ -333,21 +246,9 @@ public class CorbeauManager {
         return PENDING_GROUP.getOrDefault(p.getUUID(), Collections.emptyList());
     }
 
-    /** 12 couleurs de sceau ; index déterminé par hash stable du nom de l'expéditeur. */
-    private static final ChatFormatting[] SEAL_COLORS = new ChatFormatting[] {
-        ChatFormatting.RED, ChatFormatting.GOLD, ChatFormatting.YELLOW, ChatFormatting.GREEN,
-        ChatFormatting.AQUA, ChatFormatting.BLUE, ChatFormatting.LIGHT_PURPLE, ChatFormatting.DARK_RED,
-        ChatFormatting.DARK_GREEN, ChatFormatting.DARK_AQUA, ChatFormatting.DARK_PURPLE, ChatFormatting.DARK_BLUE
-    };
-
-    /**
-     * @param name nom de l'expéditeur
-     * @return couleur de sceau déterministe associée à ce nom
-     */
+    /** Façade vers {@link LetterRenderer#sealColorFor(String)}. */
     public static ChatFormatting sealColorFor(String name) {
-        if (name == null || name.isEmpty()) return ChatFormatting.GRAY;
-        int h = name.toLowerCase(Locale.ROOT).hashCode();
-        return SEAL_COLORS[Math.floorMod(h, SEAL_COLORS.length)];
+        return LetterRenderer.sealColorFor(name);
     }
 
     // ============================ API publique ============================
@@ -1261,51 +1162,14 @@ public class CorbeauManager {
 
     // ============================ Item papier (garder) ============================
 
+    /** Façade vers {@link LetterRenderer#giveLetterItem}. */
     private static void giveLetterItem(ServerPlayer player, String sender, String subject, String body) {
-        ItemStack stack = makeLetterItem(sender, subject, body);
-        if (!player.getInventory().add(stack)) player.drop(stack, false);
+        LetterRenderer.giveLetterItem(player, sender, subject, body);
     }
 
+    /** Façade vers {@link LetterRenderer#makeLetterItem}. */
     private static ItemStack makeLetterItem(String sender, String subject, String body) {
-        ItemStack stack = new ItemStack(Items.PAPER);
-        // Nom : sujet entre guillemets, doré
-        Component title = Component.literal("✉ " + subject).withStyle(s ->
-            s.withColor(ChatFormatting.LIGHT_PURPLE).withItalic(false));
-        stack.setHoverName(title);
-
-        CompoundTag display = stack.getOrCreateTagElement("display");
-        ListTag lore = new ListTag();
-        ChatFormatting seal = sealColorFor(sender);
-        lore.add(StringTag.valueOf(Component.Serializer.toJson(
-            Component.literal("● ").withStyle(seal)
-                .append(Component.literal("Sceau de " + sender).withStyle(ChatFormatting.GRAY)))));
-        lore.add(StringTag.valueOf(Component.Serializer.toJson(
-            Component.literal("De : " + sender).withStyle(ChatFormatting.GRAY))));
-        lore.add(StringTag.valueOf(Component.Serializer.toJson(
-            Component.literal(""))));
-        for (String line : wrap(body, 38)) {
-            lore.add(StringTag.valueOf(Component.Serializer.toJson(
-                Component.literal(line)
-                    .withStyle(s -> s.withColor(ChatFormatting.LIGHT_PURPLE).withItalic(false)))));
-        }
-        display.put("Lore", lore);
-        return stack;
-    }
-
-    private static List<String> wrap(String body, int width) {
-        List<String> out = new ArrayList<>();
-        if (body == null) return out;
-        for (String paragraph : body.split("\n")) {
-            if (paragraph.isEmpty()) { out.add(""); continue; }
-            StringBuilder line = new StringBuilder();
-            for (String word : paragraph.split(" ")) {
-                if (line.length() == 0) line.append(word);
-                else if (line.length() + 1 + word.length() <= width) line.append(' ').append(word);
-                else { out.add(line.toString()); line.setLength(0); line.append(word); }
-            }
-            if (line.length() > 0) out.add(line.toString());
-        }
-        return out;
+        return LetterRenderer.makeLetterItem(sender, subject, body);
     }
 
     // ============================ Effets visuels ============================
@@ -1351,15 +1215,6 @@ public class CorbeauManager {
         double lift = Math.sin(c.tickCount * 0.4) * 0.04;
         c.moveTo(cur.x + step.x, cur.y + step.y + lift, cur.z + step.z, computeYaw(step), -20f);
         return false;
-    }
-
-    private static int findPaperSlot(ServerPlayer p) {
-        var inv = p.getInventory();
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-            ItemStack st = inv.getItem(i);
-            if (!st.isEmpty() && st.getItem() == Items.PAPER && !st.hasTag()) return i;
-        }
-        return -1;
     }
 
     public static int countPaper(ServerPlayer p) {
