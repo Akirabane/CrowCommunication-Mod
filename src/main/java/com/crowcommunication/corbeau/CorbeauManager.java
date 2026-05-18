@@ -37,6 +37,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.registries.ForgeRegistries;
 
@@ -109,15 +110,15 @@ public class CorbeauManager {
     private static final List<Bird> BIRDS = new ArrayList<>();
 
     /** Une livraison programmée temporellement (en cours de "vol" virtuel jusqu'au destinataire). */
-    private static final class PendingDelivery {
-        final UUID recipientUUID;
-        final UUID msgId;
-        final String sender, subject, body;
+    public static final class PendingDelivery {
+        public final UUID recipientUUID;
+        public final UUID msgId;
+        public final String sender, subject, body;
         /** Nom affiché au destinataire — si {@code null}, on utilise {@link #sender}. Usurpation = différent. */
-        final String displaySender;
-        final long deliverAtTick;
-        final boolean isReturn;
-        PendingDelivery(UUID r, UUID id, String s, String disp, String su, String b, long t, boolean ret) {
+        public final String displaySender;
+        public final long deliverAtTick;
+        public final boolean isReturn;
+        public PendingDelivery(UUID r, UUID id, String s, String disp, String su, String b, long t, boolean ret) {
             this.recipientUUID = r; this.msgId = id; this.sender = s; this.displaySender = disp;
             this.subject = su; this.body = b;
             this.deliverAtTick = t; this.isReturn = ret;
@@ -137,6 +138,33 @@ public class CorbeauManager {
         }
     }
     private static final Map<UUID, Deque<QueuedMessage>> QUEUE = new ConcurrentHashMap<>();
+
+    /**
+     * Un pigeon perdu : lettre qu'un corbeau n'a jamais pu atteindre (destinataire trop loin).
+     * Apparaît au sol après un délai, à une position calculée au moment de l'envoi —
+     * quiconque trouve la lettre peut la lire.
+     */
+    public static final class LostPigeon {
+        public final String senderRealName;   // expéditeur réel — pour traçabilité interne
+        public final String displaySender;    // nom affiché (peut être usurpé)
+        public final String subject, body;
+        public final String dimensionKey;     // "minecraft:overworld" etc.
+        public final double x, y, z;
+        public final long dropAtMillis;       // epoch ms : survit aux restarts serveur
+        public LostPigeon(String real, String disp, String su, String b,
+                          String dim, double x, double y, double z, long dropAt) {
+            this.senderRealName = real; this.displaySender = disp;
+            this.subject = su; this.body = b;
+            this.dimensionKey = dim; this.x = x; this.y = y; this.z = z;
+            this.dropAtMillis = dropAt;
+        }
+    }
+    private static final List<LostPigeon> LOST_PIGEONS = new ArrayList<>();
+    /** Marque la persistance comme à-sauver à la prochaine sauvegarde du monde. */
+    private static java.util.function.Consumer<Void> persistDirty = v -> {};
+    public static void setPersistenceDirtyMarker(java.util.function.Consumer<Void> marker) {
+        persistDirty = marker == null ? (v -> {}) : marker;
+    }
 
     // ============================ Économie & règles ============================
 
@@ -501,7 +529,53 @@ public class CorbeauManager {
             PENDING.add(new PendingDelivery(recipientUUID, msgId, senderName, displaySender,
                 subject, body, deliverAt, isReturn));
         }
+        persistDirty.accept(null);
         return msgId;
+    }
+
+    /**
+     * Programme un "pigeon perdu" : la lettre apparaîtra au sol dans un endroit aléatoire
+     * autour de l'expéditeur après un délai variable (5–20 min). Le sender ne reçoit aucune
+     * confirmation que la lettre a été perdue — c'est volontairement opaque pour le RP.
+     *
+     * @return le délai estimé en secondes, pour information uniquement (non communiqué au joueur)
+     */
+    public static long scheduleLostPigeon(ServerPlayer sender, String displaySender,
+                                          String subject, String body) {
+        var rng = sender.getRandom();
+        // Position : entre 800 et 1400 blocs du sender, dans une direction aléatoire
+        double angle = rng.nextDouble() * Math.PI * 2.0;
+        double dist = 800 + rng.nextDouble() * 600;
+        double x = sender.getX() + Math.cos(angle) * dist;
+        double z = sender.getZ() + Math.sin(angle) * dist;
+        double y = sender.getY(); // Y du sender, faute de mieux — sera ajusté au spawn
+        long delayMs = (5L + rng.nextInt(16)) * 60L * 1000L; // 5 à 20 min
+        long dropAt = System.currentTimeMillis() + delayMs;
+        String dim = sender.level().dimension().location().toString();
+        synchronized (LOST_PIGEONS) {
+            LOST_PIGEONS.add(new LostPigeon(sender.getGameProfile().getName(), displaySender,
+                subject, body, dim, x, y, z, dropAt));
+        }
+        persistDirty.accept(null);
+        return delayMs / 1000L;
+    }
+
+    /** Accès lecture-seule aux pigeons perdus pour la couche de persistance. */
+    public static List<LostPigeon> snapshotLostPigeons() {
+        synchronized (LOST_PIGEONS) { return new ArrayList<>(LOST_PIGEONS); }
+    }
+    public static List<PendingDelivery> snapshotPending() {
+        synchronized (PENDING) { return new ArrayList<>(PENDING); }
+    }
+    public static void restorePersistedState(List<PendingDelivery> pending, List<LostPigeon> lost) {
+        synchronized (PENDING) { PENDING.clear(); PENDING.addAll(pending); }
+        synchronized (LOST_PIGEONS) { LOST_PIGEONS.clear(); LOST_PIGEONS.addAll(lost); }
+    }
+    /** Rebuilds an internal PendingDelivery from persisted fields (used by SavedData on load). */
+    public static PendingDelivery createPendingForRestore(UUID recipientUUID, UUID msgId, String sender,
+                                                          String displaySender, String subject, String body,
+                                                          long deliverAtTick, boolean isReturn) {
+        return new PendingDelivery(recipientUUID, msgId, sender, displaySender, subject, body, deliverAtTick, isReturn);
     }
 
     /**
@@ -693,6 +767,17 @@ public class CorbeauManager {
 
     // ============================ Tick principal ============================
 
+    /** Au démarrage du serveur, attacher la couche de persistance (PENDING + LOST_PIGEONS). */
+    @SubscribeEvent
+    public static void onServerStarted(ServerStartedEvent event) {
+        try {
+            ServerLevel overworld = event.getServer().overworld();
+            if (overworld != null) CorbeauSavedData.attach(overworld);
+        } catch (Throwable t) {
+            System.err.println("[Corbeau] Impossible d'attacher la persistance : " + t);
+        }
+    }
+
     /** Corbeau abattu en plein vol : la lettre tombe au sol pour qui la trouve. */
     @SubscribeEvent
     public static void onBirdDeath(LivingDeathEvent event) {
@@ -779,6 +864,41 @@ public class CorbeauManager {
             }
             BIRDS.removeAll(toRemove);
         }
+
+        // 4) Pigeons perdus : à l'instant programmé, la lettre tombe dans le monde
+        long nowMs = System.currentTimeMillis();
+        List<LostPigeon> hatched = new ArrayList<>();
+        synchronized (LOST_PIGEONS) {
+            for (LostPigeon lp : LOST_PIGEONS) {
+                if (nowMs >= lp.dropAtMillis) hatched.add(lp);
+            }
+            LOST_PIGEONS.removeAll(hatched);
+        }
+        for (LostPigeon lp : hatched) dropLostPigeonInWorld(server, lp);
+        if (!hatched.isEmpty()) persistDirty.accept(null);
+    }
+
+    /** Fait apparaître l'item lettre d'un pigeon perdu à sa position planifiée. */
+    private static void dropLostPigeonInWorld(MinecraftServer server, LostPigeon lp) {
+        ServerLevel sl = null;
+        for (ServerLevel candidate : server.getAllLevels()) {
+            if (candidate.dimension().location().toString().equals(lp.dimensionKey)) { sl = candidate; break; }
+        }
+        if (sl == null) return; // dimension supprimée entre-temps, on abandonne silencieusement
+        // Trouver une hauteur de sol valide à (x, z) — le Y stocké est juste un fallback
+        int bx = (int) Math.floor(lp.x);
+        int bz = (int) Math.floor(lp.z);
+        int by = sl.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, bx, bz);
+        double spawnY = by > 0 ? by + 0.5 : lp.y;
+        ItemStack letter = makeLetterItem(lp.displaySender, lp.subject, lp.body);
+        ItemEntity drop = new ItemEntity(sl, lp.x, spawnY, lp.z, letter);
+        drop.setDeltaMovement(0, 0.05, 0);
+        drop.setPickUpDelay(0);
+        // L'item ne disparaît jamais — il attend qu'un joueur le trouve
+        drop.setUnlimitedLifetime();
+        sl.addFreshEntity(drop);
+        // Particules discrètes pour signaler l'apparition (peu visible à distance, c'est voulu)
+        sl.sendParticles(ParticleTypes.POOF, lp.x, spawnY + 0.4, lp.z, 8, 0.3, 0.2, 0.3, 0.01);
     }
 
     private static void spawnDeliveryBird(ServerPlayer player, QueuedMessage msg) {

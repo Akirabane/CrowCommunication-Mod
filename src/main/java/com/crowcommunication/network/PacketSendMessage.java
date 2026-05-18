@@ -59,13 +59,13 @@ public class PacketSendMessage {
 
             List<ServerPlayer> validRecipients = new ArrayList<>();
             List<String> rejected = new ArrayList<>();
-            List<String> lost = new ArrayList<>();
+            List<ServerPlayer> tooFar = new ArrayList<>();
             for (String name : targets) {
                 ServerPlayer r = CorbeauManager.findPlayer(server, sender, name);
                 if (r == null) { rejected.add(name); continue; }
                 if (r == sender) continue; // garde absolue contre l'auto-envoi
                 if (CorbeauManager.senderDistance(sender, r) > CorbeauManager.MAX_DELIVERY_DISTANCE) {
-                    lost.add(r.getGameProfile().getName()); continue;
+                    tooFar.add(r); continue;
                 }
                 validRecipients.add(r);
             }
@@ -74,17 +74,28 @@ public class PacketSendMessage {
                 sender.sendSystemMessage(Component.literal(
                     "§c§oLe corbeau ne connaît personne sous le nom §f" + n + "§c."));
             }
-            for (String n : lost) {
+            // Tentative d'usurpation : résolue UNE fois ici, puis appliquée à toutes les livraisons
+            // (y compris aux pigeons perdus qui seront programmés ci-dessous).
+            String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
+
+            // Pigeons perdus : pour chaque destinataire hors de portée, programmer un drop différé.
+            // Aucun message au sender : silence total — la lettre se "perd dans les airs".
+            for (ServerPlayer tf : tooFar) {
+                CorbeauManager.scheduleLostPigeon(sender, displaySender, p.subject, p.body);
+                // Le message au sender reste identique à un envoi normal : pas d'indication d'échec
                 sender.sendSystemMessage(Component.literal(
-                    "§c§oTrop loin — §f" + n + "§c est hors de portée des corbeaux. Le messager s'est perdu."));
+                    "§8§oUn corbeau s'envole vers §f" + tf.getGameProfile().getName()
+                    + "§8 — sa route sera longue."));
             }
+
             if (validRecipients.isEmpty()) {
+                // Si TOUT a fini en pigeon perdu, on consomme quand même le cooldown et le papier
+                if (!tooFar.isEmpty()) {
+                    CorbeauManager.markSent(sender);
+                }
                 CorbeauManager.onLetterCancelled(sender);
                 return;
             }
-
-            // Tentative d'usurpation : résolue UNE fois ici, puis appliquée à toutes les livraisons.
-            String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
             String realName = sender.getGameProfile().getName();
             boolean forgeAttempted = p.forgeName != null && !p.forgeName.isBlank()
                 && !p.forgeName.trim().equalsIgnoreCase(realName);
