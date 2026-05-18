@@ -21,7 +21,9 @@ public final class ComposeScreenOpener {
      *
      * @param recipients liste de destinataires séparée par des virgules, ou chaîne vide
      */
-    public static void open(String recipients) {
+    public static void open(String recipients) { open(recipients, 0); }
+
+    public static void open(String recipients, int forgeCooldownSec) {
         Minecraft mc = Minecraft.getInstance();
         if (!MCEFBootstrap.isReady()) {
             mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
@@ -38,9 +40,15 @@ public final class ComposeScreenOpener {
             mc.setScreen(null);
         });
         String url = MCEFBootstrap.urlFor("compose.html");
+        StringBuilder query = new StringBuilder();
         if (recipients != null && !recipients.isEmpty()) {
-            url += "?to=" + URLEncoder.encode(recipients, StandardCharsets.UTF_8);
+            query.append("to=").append(URLEncoder.encode(recipients, StandardCharsets.UTF_8));
         }
+        if (forgeCooldownSec > 0) {
+            if (query.length() > 0) query.append('&');
+            query.append("forgeCd=").append(forgeCooldownSec);
+        }
+        if (query.length() > 0) url += "?" + query;
         mc.setScreen(new WebMenuScreen(url, bridge));
     }
 }

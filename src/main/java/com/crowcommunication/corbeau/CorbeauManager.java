@@ -155,6 +155,38 @@ public class CorbeauManager {
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
     private static final Map<UUID, Long> LAST_INTERCEPT_PING = new ConcurrentHashMap<>();
 
+    /** Historique des 10 dernières lettres envoyées/reçues par joueur. */
+    public static final class HistoryEntry {
+        public final long worldTimeMillis;
+        public final boolean outgoing;     // true = envoyée par moi
+        public final String otherParty;    // nom du destinataire (envoi) ou de l'expéditeur affiché (réception)
+        public final String subject;
+        public final boolean forgeryAttempted;
+        public final boolean forgerySucceeded;
+        public HistoryEntry(long t, boolean out, String other, String subject,
+                            boolean attempted, boolean succeeded) {
+            this.worldTimeMillis = t; this.outgoing = out;
+            this.otherParty = other; this.subject = subject;
+            this.forgeryAttempted = attempted; this.forgerySucceeded = succeeded;
+        }
+    }
+    private static final int HISTORY_MAX = 10;
+    private static final Map<UUID, Deque<HistoryEntry>> HISTORY = new ConcurrentHashMap<>();
+
+    public static void recordHistory(UUID playerUUID, HistoryEntry entry) {
+        Deque<HistoryEntry> dq = HISTORY.computeIfAbsent(playerUUID, k -> new ArrayDeque<>());
+        synchronized (dq) {
+            dq.addFirst(entry);
+            while (dq.size() > HISTORY_MAX) dq.removeLast();
+        }
+    }
+
+    public static List<HistoryEntry> getHistory(UUID playerUUID) {
+        Deque<HistoryEntry> dq = HISTORY.get(playerUUID);
+        if (dq == null) return Collections.emptyList();
+        synchronized (dq) { return new ArrayList<>(dq); }
+    }
+
     /**
      * @param p le joueur expéditeur
      * @return le nombre de ticks restants avant le prochain envoi autorisé, {@code 0} si disponible
@@ -169,6 +201,15 @@ public class CorbeauManager {
 
     public static void markSent(ServerPlayer p) {
         if (p.getServer() != null) LAST_SEND.put(p.getUUID(), (long) p.getServer().getTickCount());
+    }
+
+    /** Cooldown d'usurpation restant en ticks pour ce joueur (0 si disponible). */
+    public static long forgeCooldownRemainingTicks(ServerPlayer p) {
+        Long last = LAST_FORGE_ATTEMPT.get(p.getUUID());
+        MinecraftServer srv = p.getServer();
+        if (last == null || srv == null) return 0;
+        long left = FORGE_COOLDOWN_TICKS - (srv.getTickCount() - last);
+        return Math.max(0, left);
     }
 
     /**
@@ -218,11 +259,37 @@ public class CorbeauManager {
         if (success) {
             sender.sendSystemMessage(Component.literal(
                 "§6§oTon trait de plume imite à la perfection le sceau de §f" + target + "§6..."));
+            playForgeFeedback(sender, true);
             return target;
         }
         sender.sendSystemMessage(Component.literal(
             "§8§oTa tentative d'imiter le sceau de §f" + target + "§8 a raté — la lettre part sous ton vrai nom."));
+        playForgeFeedback(sender, false);
         return real;
+    }
+
+    /** Effets RP du résultat d'usurpation — visibles uniquement par l'expéditeur. */
+    private static void playForgeFeedback(ServerPlayer sender, boolean success) {
+        if (!(sender.level() instanceof ServerLevel sl)) return;
+        Vec3 p = sender.position().add(0, 1.2, 0);
+        if (success) {
+            // Cling de cire qui prend — note dorée + particules d'éclat
+            sl.playSound(null, sender.blockPosition(),
+                SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.PLAYERS, 0.6f, 1.6f);
+            sl.playSound(null, sender.blockPosition(),
+                SoundEvents.AMETHYST_BLOCK_CHIME, SoundSource.PLAYERS, 0.5f, 1.4f);
+            sl.sendParticles(ParticleTypes.END_ROD,  p.x, p.y, p.z, 10, 0.4, 0.4, 0.4, 0.02);
+            sl.sendParticles(ParticleTypes.GLOW,     p.x, p.y, p.z, 16, 0.5, 0.5, 0.5, 0.03);
+            sl.sendParticles(ParticleTypes.FLAME,    p.x, p.y, p.z,  6, 0.3, 0.3, 0.3, 0.01);
+        } else {
+            // Plume cassée — note grave + particules sombres
+            sl.playSound(null, sender.blockPosition(),
+                SoundEvents.WOOL_BREAK, SoundSource.PLAYERS, 0.7f, 0.7f);
+            sl.playSound(null, sender.blockPosition(),
+                SoundEvents.NOTE_BLOCK_BASEDRUM.value(), SoundSource.PLAYERS, 0.5f, 0.6f);
+            sl.sendParticles(ParticleTypes.SMOKE,    p.x, p.y, p.z, 14, 0.4, 0.4, 0.4, 0.02);
+            sl.sendParticles(ParticleTypes.ASH,      p.x, p.y, p.z, 18, 0.5, 0.4, 0.5, 0.03);
+        }
     }
 
     public static void setPendingGroup(ServerPlayer p, List<String> names) {
@@ -917,9 +984,16 @@ public class CorbeauManager {
             // Seul l'oiseau principal ouvre l'UI — les autres hovèrent en silence
             if (b.isMain) {
                 String recipients = String.join(", ", peekPendingGroup(b.player));
-                NetworkHandler.sendToClient(new PacketOpenCompose(recipients), b.player);
+                int forgeCdSec = (int) (forgeCooldownRemainingTicks(b.player) / 20L);
+                NetworkHandler.sendToClient(new PacketOpenCompose(recipients, forgeCdSec), b.player);
             }
         } else { // DELIVERY → décision via chat clickable uniquement
+            // Historique destinataire : enregistrement à l'arrivée (pour les retours AFK, on n'enregistre pas un doublon)
+            if (!b.isReturn) {
+                String shown = (b.displaySender != null && !b.displaySender.isBlank()) ? b.displaySender : b.sender;
+                recordHistory(b.player.getUUID(), new HistoryEntry(
+                    System.currentTimeMillis(), false, shown, b.subject, false, false));
+            }
             showLetterInChat(b);
         }
     }

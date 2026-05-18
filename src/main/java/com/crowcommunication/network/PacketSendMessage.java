@@ -85,6 +85,10 @@ public class PacketSendMessage {
 
             // Tentative d'usurpation : résolue UNE fois ici, puis appliquée à toutes les livraisons.
             String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
+            String realName = sender.getGameProfile().getName();
+            boolean forgeAttempted = p.forgeName != null && !p.forgeName.isBlank()
+                && !p.forgeName.trim().equalsIgnoreCase(realName);
+            boolean forgeSucceeded = forgeAttempted && !displaySender.equalsIgnoreCase(realName);
 
             List<java.util.UUID> deliveryIds = new ArrayList<>();
             List<String> recipientNames = new ArrayList<>();
@@ -103,6 +107,10 @@ public class PacketSendMessage {
                 sender.sendSystemMessage(Component.literal(
                     "§8§oUn corbeau s'envole vers §f" + recipient.getGameProfile().getName()
                     + "§8 — livraison estimée dans §f" + prettyTime + "§8."));
+                CorbeauManager.recordHistory(sender.getUUID(), new CorbeauManager.HistoryEntry(
+                    System.currentTimeMillis(), true,
+                    recipient.getGameProfile().getName(), p.subject,
+                    forgeAttempted, forgeSucceeded));
             }
 
             CorbeauManager.markSent(sender);

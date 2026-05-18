@@ -25,6 +25,7 @@ public class CrowCommunicationMod {
 
         MinecraftForge.EVENT_BUS.register(com.crowcommunication.corbeau.CorbeauCommand.class);
         MinecraftForge.EVENT_BUS.register(com.crowcommunication.corbeau.CorbeauChoiceCommand.class);
+        MinecraftForge.EVENT_BUS.register(com.crowcommunication.corbeau.CorbeauHistoryCommand.class);
         MinecraftForge.EVENT_BUS.register(com.crowcommunication.corbeau.CorbeauManager.class);
         MinecraftForge.EVENT_BUS.register(com.crowcommunication.corbeau.ClientReadyState.class);
     }
