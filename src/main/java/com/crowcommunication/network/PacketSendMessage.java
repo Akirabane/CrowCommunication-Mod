@@ -23,21 +23,29 @@ public class PacketSendMessage {
     private final String target;
     private final String subject;
     private final String body;
+    /** Pseudo à usurper si le QTE a été réussi côté client. Vide si pas d'usurpation. */
+    private final String forgeName;
 
     public PacketSendMessage(String target, String subject, String body) {
+        this(target, subject, body, "");
+    }
+
+    public PacketSendMessage(String target, String subject, String body, String forgeName) {
         this.target = target == null ? "" : target;
         this.subject = subject == null ? "" : subject;
         this.body = body == null ? "" : body;
+        this.forgeName = forgeName == null ? "" : forgeName;
     }
 
     public static void encode(PacketSendMessage p, FriendlyByteBuf buf) {
         buf.writeUtf(p.target, 32);
         buf.writeUtf(p.subject, 80);
         buf.writeUtf(p.body, 2000);
+        buf.writeUtf(p.forgeName, 32);
     }
 
     public static PacketSendMessage decode(FriendlyByteBuf buf) {
-        return new PacketSendMessage(buf.readUtf(32), buf.readUtf(80), buf.readUtf(2000));
+        return new PacketSendMessage(buf.readUtf(32), buf.readUtf(80), buf.readUtf(2000), buf.readUtf(32));
     }
 
     public static void handle(PacketSendMessage p, Supplier<NetworkEvent.Context> ctx) {
@@ -76,6 +84,9 @@ public class PacketSendMessage {
                 return;
             }
 
+            // Tentative d'usurpation : résolue UNE fois ici, puis appliquée à toutes les livraisons.
+            String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
+
             List<java.util.UUID> deliveryIds = new ArrayList<>();
             List<String> recipientNames = new ArrayList<>();
             List<Long> delays = new ArrayList<>();
@@ -83,7 +94,7 @@ public class PacketSendMessage {
                 long delayTicks = CorbeauManager.computeDeliveryDelayTicks(sender, recipient);
                 long delaySec = delayTicks / 20L;
                 java.util.UUID msgId = CorbeauManager.scheduleDelivery(server, recipient,
-                    sender.getGameProfile().getName(), p.subject, p.body, delayTicks);
+                    sender.getGameProfile().getName(), displaySender, p.subject, p.body, delayTicks);
                 deliveryIds.add(msgId);
                 recipientNames.add(recipient.getGameProfile().getName());
                 delays.add(delayTicks);
@@ -97,7 +108,7 @@ public class PacketSendMessage {
 
             CorbeauManager.markSent(sender);
             CorbeauManager.onMessageSent(sender, validRecipients.size());
-            CorbeauManager.assignOutgoingLetter(sender, p.subject, p.body, recipientNames, deliveryIds, delays);
+            CorbeauManager.assignOutgoingLetter(sender, p.subject, p.body, recipientNames, deliveryIds, delays, displaySender);
         });
         ctx.get().setPacketHandled(true);
     }

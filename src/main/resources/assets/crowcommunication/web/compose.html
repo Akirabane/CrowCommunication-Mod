@@ -42,6 +42,18 @@
       <div class="counter"><span id="count">0</span> / 2000</div>
     </label>
 
+    <div class="forge-block">
+      <label class="forge-toggle">
+        <input id="forgeCheck" type="checkbox">
+        <span class="forge-label">Usurper un sceau</span>
+        <span class="forge-hint">Imite la plume d'un autre — l'épreuve est dure et incertaine.</span>
+      </label>
+      <div id="forgeField" class="field forge-target hidden">
+        <span class="label">Pseudo à imiter</span>
+        <input id="forgeName" type="text" maxlength="32" placeholder="Le nom à faire croire">
+      </div>
+    </div>
+
     <div id="error" class="error hidden"></div>
 
     <div class="actions">
@@ -53,6 +65,24 @@
     </div>
   </div>
 </main>
+
+<div id="qteOverlay" class="qte-overlay hidden">
+  <div class="qte-card">
+    <div class="qte-eyebrow">Épreuve d'usurpation</div>
+    <h2 class="qte-title">Imite le sceau</h2>
+    <p class="qte-sub">Frappe <strong>Espace</strong> quand le marqueur passe sur la zone d'or. <span id="qteRound">Manche 1 / 3</span></p>
+    <div id="qteBar" class="qte-bar">
+      <div id="qteZone" class="qte-zone"></div>
+      <div id="qteMarker" class="qte-marker"></div>
+    </div>
+    <div id="qteFeedback" class="qte-feedback">Concentre-toi…</div>
+    <div class="qte-actions">
+      <button id="qteAbort" type="button" class="btn ghost">Renoncer</button>
+      <button id="qteHit" type="button" class="btn primary">Frapper</button>
+    </div>
+  </div>
+</div>
+
 <script src="compose.js"></script>
 </body>
 </html>

@@ -87,6 +87,8 @@ public class CorbeauManager {
         // pour DELIVERY :
         UUID msgId;
         String sender, subject, body;
+        /** Nom à afficher au destinataire (null = utiliser sender). Set si usurpation réussie. */
+        String displaySender;
 
         /** IDs des livraisons programmées portées par ce corbeau (SUMMON OUTGOING interceptable). */
         List<UUID> deliveryIds;
@@ -112,10 +114,13 @@ public class CorbeauManager {
         final UUID recipientUUID;
         final UUID msgId;
         final String sender, subject, body;
+        /** Nom affiché au destinataire — si {@code null}, on utilise {@link #sender}. Usurpation = différent. */
+        final String displaySender;
         final long deliverAtTick;
         final boolean isReturn;
-        PendingDelivery(UUID r, UUID id, String s, String su, String b, long t, boolean ret) {
-            this.recipientUUID = r; this.msgId = id; this.sender = s; this.subject = su; this.body = b;
+        PendingDelivery(UUID r, UUID id, String s, String disp, String su, String b, long t, boolean ret) {
+            this.recipientUUID = r; this.msgId = id; this.sender = s; this.displaySender = disp;
+            this.subject = su; this.body = b;
             this.deliverAtTick = t; this.isReturn = ret;
         }
     }
@@ -125,9 +130,11 @@ public class CorbeauManager {
     public static final class QueuedMessage {
         public final UUID id;
         public final String sender, subject, body;
+        public final String displaySender;
         public final boolean isReturn;
-        public QueuedMessage(UUID id, String s, String su, String b, boolean ret) {
-            this.id = id; this.sender = s; this.subject = su; this.body = b; this.isReturn = ret;
+        public QueuedMessage(UUID id, String s, String disp, String su, String b, boolean ret) {
+            this.id = id; this.sender = s; this.displaySender = disp;
+            this.subject = su; this.body = b; this.isReturn = ret;
         }
     }
     private static final Map<UUID, Deque<QueuedMessage>> QUEUE = new ConcurrentHashMap<>();
@@ -137,8 +144,13 @@ public class CorbeauManager {
     public static final long COOLDOWN_TICKS = 20L * 120L;          // 2 min entre deux envois
     public static final double MAX_DELIVERY_DISTANCE = 1500.0;     // au-delà : "le corbeau s'est perdu"
     public static final double INTERCEPT_RADIUS = 32.0;            // joueurs tiers qui entendent passer
+    /** Cooldown spécifique aux tentatives d'usurpation : 30 min. */
+    public static final long FORGE_COOLDOWN_TICKS = 20L * 60L * 30L;
+    /** Probabilité serveur d'usurpation effective une fois le QTE réussi côté client. */
+    public static final double FORGE_SUCCESS_CHANCE = 0.30;
 
     private static final Map<UUID, Long> LAST_SEND = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> LAST_FORGE_ATTEMPT = new ConcurrentHashMap<>();
     /** Liste de destinataires en attente pour le prochain envoi d'un joueur (après /corbeau-groupe). */
     private static final Map<UUID, List<String>> PENDING_GROUP = new ConcurrentHashMap<>();
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
@@ -158,6 +170,43 @@ public class CorbeauManager {
 
     public static void markSent(ServerPlayer p) {
         if (p.getServer() != null) LAST_SEND.put(p.getUUID(), (long) p.getServer().getTickCount());
+    }
+
+    /**
+     * Résout le nom à afficher au destinataire :
+     * <ul>
+     *   <li>Si {@code forgeName} est vide → renvoie le vrai pseudo (pas de tentative)</li>
+     *   <li>Si {@code forgeName} est le pseudo de l'expéditeur → renvoie le vrai pseudo (no-op)</li>
+     *   <li>Si cooldown 30 min actif → renvoie le vrai pseudo + message d'avertissement (tentative bloquée)</li>
+     *   <li>Sinon → tirage {@link #FORGE_SUCCESS_CHANCE} (30%) ; usurpation réussie ou non, le cooldown est posé</li>
+     * </ul>
+     */
+    public static String resolveDisplaySender(ServerPlayer sender, String forgeName) {
+        String real = sender.getGameProfile().getName();
+        if (forgeName == null || forgeName.isBlank()) return real;
+        String target = forgeName.trim();
+        if (target.equalsIgnoreCase(real)) return real;
+
+        long now = sender.getServer() == null ? 0 : sender.getServer().getTickCount();
+        Long last = LAST_FORGE_ATTEMPT.get(sender.getUUID());
+        if (last != null && now - last < FORGE_COOLDOWN_TICKS) {
+            long secLeft = (FORGE_COOLDOWN_TICKS - (now - last)) / 20L;
+            long minLeft = (secLeft + 59) / 60L;
+            sender.sendSystemMessage(Component.literal(
+                "§c§oTes mains tremblent encore — tu ne peux pas usurper un sceau avant §f" + minLeft + " min§c."));
+            return real;
+        }
+        LAST_FORGE_ATTEMPT.put(sender.getUUID(), now);
+
+        boolean success = Math.random() < FORGE_SUCCESS_CHANCE;
+        if (success) {
+            sender.sendSystemMessage(Component.literal(
+                "§6§oTon trait de plume imite à la perfection le sceau de §f" + target + "§6..."));
+            return target;
+        }
+        sender.sendSystemMessage(Component.literal(
+            "§8§oTa tentative d'imiter le sceau de §f" + target + "§8 a raté — la lettre part sous ton vrai nom."));
+        return real;
     }
 
     public static void setPendingGroup(ServerPlayer p, List<String> names) {
@@ -598,26 +647,21 @@ Details:
      * @param delayTicks délai en ticks avant l'entrée en queue
      */
     public static UUID scheduleDelivery(MinecraftServer server, ServerPlayer recipient,
-                                        String senderName, String subject, String body, long delayTicks) {
-        return scheduleDeliveryInternal(server, recipient.getUUID(), senderName, subject, body, delayTicks, false);
-    }
-
-    /**
-     * Programme un renvoi vers le joueur identifié par {@code recipientUUID}. Marqué {@code isReturn}
-     * pour que le timeout de second tour fasse tomber la lettre au sol au lieu de boucler.
-     */
-    private static UUID scheduleReturnDelivery(MinecraftServer server, UUID recipientUUID,
-                                               String senderName, String subject, String body, long delayTicks) {
-        return scheduleDeliveryInternal(server, recipientUUID, senderName, subject, body, delayTicks, true);
+                                        String senderName, String displaySender,
+                                        String subject, String body, long delayTicks) {
+        return scheduleDeliveryInternal(server, recipient.getUUID(), senderName, displaySender,
+            subject, body, delayTicks, false);
     }
 
     private static UUID scheduleDeliveryInternal(MinecraftServer server, UUID recipientUUID,
-                                                 String senderName, String subject, String body,
+                                                 String senderName, String displaySender,
+                                                 String subject, String body,
                                                  long delayTicks, boolean isReturn) {
         long deliverAt = server.getTickCount() + delayTicks;
         UUID msgId = UUID.randomUUID();
         synchronized (PENDING) {
-            PENDING.add(new PendingDelivery(recipientUUID, msgId, senderName, subject, body, deliverAt, isReturn));
+            PENDING.add(new PendingDelivery(recipientUUID, msgId, senderName, displaySender,
+                subject, body, deliverAt, isReturn));
         }
         return msgId;
     }
@@ -632,7 +676,8 @@ Details:
      * @param ids     IDs des livraisons programmées portées par ces corbeaux
      */
     public static void assignOutgoingLetter(ServerPlayer player, String subject, String body,
-                                            List<String> recipientNames, List<UUID> ids, List<Long> delays) {
+                                            List<String> recipientNames, List<UUID> ids, List<Long> delays,
+                                            String displaySender) {
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
                 if (b.player != player || b.kind != Kind.SUMMON || b.phase != Phase.OUTGOING) continue;
@@ -646,6 +691,7 @@ Details:
                 b.outBody = body;
                 b.deliveryIds = new ArrayList<>(List.of(ids.get(idx)));
                 b.outgoingDurationTicks = delays.get(idx);
+                b.displaySender = displaySender;
             }
         }
     }
@@ -690,7 +736,9 @@ Details:
         if (match.phase == Phase.OUTGOING) return;
 
         if (keep) {
-            giveLetterItem(player, match.sender, match.subject, match.body);
+            String shown = (match.displaySender != null && !match.displaySender.isBlank())
+                ? match.displaySender : match.sender;
+            giveLetterItem(player, shown, match.subject, match.body);
             player.sendSystemMessage(Component.literal("§8§oTu glisses la lettre dans ta poche."));
         } else {
             player.sendSystemMessage(Component.literal("§8§oTu confies la lettre au corbeau, qui l'emporte au feu."));
@@ -818,9 +866,11 @@ Details:
         }
         if (match == null) return;
         if (match.kind == Kind.DELIVERY && match.phase != Phase.OUTGOING) {
+            String shownSender = (match.displaySender != null && !match.displaySender.isBlank())
+                ? match.displaySender : match.sender;
             // L'oiseau portait une lettre — la faire tomber sur place
             if (mob.level() instanceof ServerLevel sl) {
-                ItemStack letter = makeLetterItem(match.sender, match.subject, match.body);
+                ItemStack letter = makeLetterItem(shownSender, match.subject, match.body);
                 Vec3 p = mob.position();
                 ItemEntity drop = new ItemEntity(sl, p.x, p.y + 0.4, p.z, letter);
                 drop.setDeltaMovement(0, 0.1, 0);
@@ -832,19 +882,21 @@ Details:
             if (event.getSource().getEntity() instanceof ServerPlayer killer
                     && !killer.getUUID().equals(match.player.getUUID())) {
                 killer.sendSystemMessage(Component.literal(
-                    "§e§oTu as intercepté une lettre de §f" + match.sender
+                    "§e§oTu as intercepté une lettre de §f" + shownSender
                     + " §eà §f" + match.player.getGameProfile().getName() + "§e."));
                 match.player.sendSystemMessage(Component.literal(
                     "§c§o§f" + killer.getGameProfile().getName()
-                    + "§c a abattu le corbeau qui te portait une lettre de §f" + match.sender + "§c."));
+                    + "§c a abattu le corbeau qui te portait une lettre de §f" + shownSender + "§c."));
             } else {
                 match.player.sendSystemMessage(Component.literal(
-                    "§c§oUn corbeau s'est écroulé en plein vol — une lettre de §f" + match.sender + "§c ne t'arrivera jamais."));
+                    "§c§oUn corbeau s'est écroulé en plein vol — une lettre de §f" + shownSender + "§c ne t'arrivera jamais."));
             }
         } else if (match.kind == Kind.SUMMON && match.phase == Phase.OUTGOING && match.outSubject != null) {
             // Corbeau porteur abattu en vol — lettre tombe, livraison annulée
             if (mob.level() instanceof ServerLevel sl) {
-                ItemStack letter = makeLetterItem(match.player.getGameProfile().getName(), match.outSubject, match.outBody);
+                String shownSender = (match.displaySender != null && !match.displaySender.isBlank())
+                    ? match.displaySender : match.player.getGameProfile().getName();
+                ItemStack letter = makeLetterItem(shownSender, match.outSubject, match.outBody);
                 Vec3 p = mob.position();
                 ItemEntity drop = new ItemEntity(sl, p.x, p.y + 0.4, p.z, letter);
                 drop.setDeltaMovement(0, 0.1, 0);
@@ -877,7 +929,7 @@ Details:
             for (PendingDelivery d : PENDING) {
                 if (now >= d.deliverAtTick) {
                     QUEUE.computeIfAbsent(d.recipientUUID, k -> new ArrayDeque<>())
-                         .addLast(new QueuedMessage(d.msgId, d.sender, d.subject, d.body, d.isReturn));
+                         .addLast(new QueuedMessage(d.msgId, d.sender, d.displaySender, d.subject, d.body, d.isReturn));
                     done.add(d);
                 }
             }
@@ -920,6 +972,7 @@ Details:
         }
         b.msgId = msg.id;
         b.sender = msg.sender;
+        b.displaySender = msg.displaySender;
         b.subject = msg.subject;
         b.body = msg.body;
         b.isReturn = msg.isReturn;
@@ -1125,12 +1178,14 @@ Details:
         ServerPlayer p = b.player;
         String cmdBase = "/corbeau-choice " + b.msgId + " ";
 
-        ChatFormatting seal = sealColorFor(b.sender);
+        // Si l'usurpation a réussi, le destinataire voit le pseudo usurpé (sceau et nom).
+        String shownSender = (b.displaySender != null && !b.displaySender.isBlank()) ? b.displaySender : b.sender;
+        ChatFormatting seal = sealColorFor(shownSender);
         String sealChar = "§" + seal.getChar() + "● ";
         Component header = b.isReturn
             ? Component.literal("§6───────── §c§l↩ §6§lLettre retournée §6─────────")
             : Component.literal("§6───────── §e§l✉ §6§lUne lettre §6─────────");
-        String metaPrefix = b.isReturn ? "§7Ta lettre §7· §f§o" : "§7De §b" + b.sender + " §7· §f§o";
+        String metaPrefix = b.isReturn ? "§7Ta lettre §7· §f§o" : "§7De §b" + shownSender + " §7· §f§o";
         Component meta = Component.literal(sealChar + metaPrefix + b.subject);
 
         MutableJoin actions = new MutableJoin();
@@ -1224,8 +1279,10 @@ Details:
                 }
                 // Expéditeur introuvable — la lettre tombe au sol devant le destinataire.
                 if (b.player.level() instanceof ServerLevel sl) {
+                    String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                        ? b.displaySender : b.sender;
                     Vec3 dropPos = b.chicken.position().add(0, -0.5, 0);
-                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
+                    ItemStack returned = makeLetterItem(shown, b.subject, b.body);
                     ItemEntity drop = new ItemEntity(sl, dropPos.x, dropPos.y, dropPos.z, returned);
                     drop.setDeltaMovement(0, 0.05, 0);
                     drop.setPickUpDelay(60);
@@ -1236,8 +1293,10 @@ Details:
             } else if (b.kind == Kind.DELIVERY && b.isReturn) {
                 // Retour ignoré par l'expéditeur — la lettre tombe à ses pieds.
                 if (b.player.level() instanceof ServerLevel sl) {
+                    String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                        ? b.displaySender : b.sender;
                     Vec3 dropPos = b.chicken.position().add(0, -0.5, 0);
-                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
+                    ItemStack returned = makeLetterItem(shown, b.subject, b.body);
                     ItemEntity drop = new ItemEntity(sl, dropPos.x, dropPos.y, dropPos.z, returned);
                     drop.setDeltaMovement(0, 0.05, 0);
                     drop.setPickUpDelay(60);

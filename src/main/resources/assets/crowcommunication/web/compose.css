@@ -261,3 +261,132 @@ html, body {
   box-shadow: 0 10px 26px rgba(0,0,0,0.42), 0 0 20px rgba(205,155,20,0.28);
   transform: translateY(-1px);
 }
+
+/* ═══════════════ Bloc usurpation ═══════════════ */
+.forge-block {
+  margin-top: 22px;
+  padding: 14px 16px;
+  background: rgba(80,30,18,0.06);
+  border: 1px dashed rgba(140,30,30,0.32);
+  border-radius: 4px;
+}
+.forge-toggle {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 10px;
+  align-items: center;
+  cursor: pointer;
+  font-family: var(--script);
+}
+.forge-toggle input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: #8a1c1c;
+  cursor: pointer;
+}
+.forge-label {
+  font-size: 18px;
+  color: #6e1818;
+  font-style: italic;
+}
+.forge-hint {
+  grid-column: 2;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-style: italic;
+  opacity: 0.85;
+}
+.forge-target { margin-top: 14px; margin-bottom: 0; }
+.forge-target.hidden { display: none; }
+
+/* ═══════════════ Overlay QTE ═══════════════ */
+.qte-overlay {
+  position: fixed; inset: 0;
+  background: rgba(8,4,2,0.78);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+.qte-overlay.hidden { display: none; }
+
+.qte-card {
+  width: min(560px, 90vw);
+  padding: 28px 34px 24px;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,238,190,0.10) 0%, transparent 60%),
+    linear-gradient(168deg, #f6eacf 0%, #eedeb9 100%);
+  border-radius: 4px;
+  border: 1px solid rgba(140,30,30,0.30);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.55), inset 0 0 60px rgba(130,30,30,0.06);
+  animation: qteIn .25s ease-out;
+}
+@keyframes qteIn {
+  from { transform: scale(.92); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+.qte-eyebrow {
+  font-family: var(--sans);
+  font-size: 10px; letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #8a1c1c;
+  font-weight: 700;
+}
+.qte-title {
+  font-family: var(--script);
+  font-size: 36px; font-weight: 700;
+  color: var(--ink);
+  margin: 2px 0 6px;
+}
+.qte-sub {
+  font-family: var(--script);
+  font-size: 16px; font-style: italic;
+  color: var(--ink-soft);
+  margin-bottom: 18px;
+}
+.qte-sub strong {
+  font-family: var(--sans);
+  background: #1a0e08;
+  color: #d4a017;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.qte-bar {
+  position: relative;
+  width: 100%; height: 38px;
+  background: linear-gradient(180deg, rgba(40,22,10,0.18), rgba(20,12,6,0.30));
+  border: 1px solid rgba(60,30,16,0.50);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 6px 0 14px;
+}
+.qte-zone {
+  position: absolute; top: 0; bottom: 0;
+  background: linear-gradient(180deg, rgba(212,160,23,0.65), rgba(176,126,20,0.85));
+  border-left: 2px solid #f4d970;
+  border-right: 2px solid #f4d970;
+  box-shadow: 0 0 12px rgba(212,160,23,0.6);
+}
+.qte-marker {
+  position: absolute; top: -2px; bottom: -2px;
+  width: 4px;
+  background: linear-gradient(180deg, #f0eada, #8a1c1c);
+  box-shadow: 0 0 8px rgba(255,40,40,0.85);
+  transition: left 0s linear;
+}
+
+.qte-feedback {
+  font-family: var(--script);
+  font-size: 18px; font-style: italic;
+  color: var(--ink-soft);
+  min-height: 24px;
+  text-align: center;
+}
+.qte-feedback.good { color: #2e6e1c; }
+.qte-feedback.bad  { color: #8a1c1c; }
+
+.qte-actions {
+  display: flex; justify-content: space-between; gap: 12px;
+  margin-top: 16px;
+}

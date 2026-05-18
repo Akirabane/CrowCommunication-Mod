@@ -69,10 +69,11 @@ public class WebBridge {
         Minecraft.getInstance().execute(() -> {
             if (payload.startsWith("sendMsg::")) {
                 String rest = payload.substring("sendMsg::".length());
-                String[] parts = rest.split("::", 3);
-                if (parts.length == 3) {
+                String[] parts = rest.split("::", 4);
+                if (parts.length >= 3) {
+                    String forge = parts.length >= 4 ? parts[3] : "";
                     com.crowcommunication.network.NetworkHandler.sendToServer(
-                        new com.crowcommunication.network.PacketSendMessage(parts[0], parts[1], parts[2]));
+                        new com.crowcommunication.network.PacketSendMessage(parts[0], parts[1], parts[2], forge));
                     fireClose("sent");
                 }
                 return;
