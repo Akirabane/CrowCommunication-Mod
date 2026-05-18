@@ -83,11 +83,11 @@ public class WebMenuScreen extends Screen {
         // Dimensions en pixels physiques (référentiel CEF)
         int bw = (int)(this.width  * s);
         int bh = (int)(this.height * s);
-        // Reproduit le layout CSS : width: min(680px, 92vw) ; margin: 5vh auto 0
+        // Reproduit le layout CSS : width: min(680px, 92vw) ; margin: 3vh auto 2vh ; max-height: 92vh
         int lw = Math.min(680, (int)(bw * 0.92));
-        int lh = Math.min(700, bh - (int)(bh * 0.05));
+        int ly = (int)(bh * 0.03);
+        int lh = bh - ly - (int)(bh * 0.02);
         int lx = (bw - lw) / 2;
-        int ly = (int)(bh * 0.05);
         // Repasser en unités GUI pour GuiGraphics.enableScissor
         int gx = (int)(lx / s);
         int gy = (int)(ly / s);

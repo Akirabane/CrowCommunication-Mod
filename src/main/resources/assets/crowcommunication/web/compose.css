@@ -23,8 +23,10 @@ html, body {
 .letter {
   position: relative; z-index: 1;
   width: min(680px, 92vw);
-  margin: 5vh auto 0;
-  padding: 36px 44px 32px;
+  max-height: 92vh;
+  overflow-y: auto;
+  margin: 3vh auto 2vh;
+  padding: 28px 40px 24px;
 
   background:
     /* Fibres de papier — deux séries de lignes très fines à angles légèrement différents */
