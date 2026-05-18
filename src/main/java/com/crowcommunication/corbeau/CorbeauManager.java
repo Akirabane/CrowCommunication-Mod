@@ -1,7 +1,18 @@
 package com.crowcommunication.corbeau;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.crowcommunication.network.NetworkHandler;
 import com.crowcommunication.network.PacketOpenCompose;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
@@ -19,18 +30,15 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.registries.ForgeRegistries;
-
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Gestionnaire central du système de courrier par corbeau.
@@ -72,9 +80,22 @@ public class CorbeauManager {
         Phase phase;
         int ticks;
         Vec3 flyTo;
+        /** Seul le bird principal ouvre l'UI de composition et déclenche le départ. */
+        boolean isMain;
+        /** Nom du destinataire vers lequel ce bird s'envole au départ (null = direction par défaut). */
+        String recipientName;
         // pour DELIVERY :
         UUID msgId;
         String sender, subject, body;
+
+        /** IDs des livraisons programmées portées par ce corbeau (SUMMON OUTGOING interceptable). */
+        List<UUID> deliveryIds;
+        /** Contenu de la lettre portée (SUMMON OUTGOING). */
+        String outSubject, outBody;
+        /** Durée totale de vol pour un SUMMON OUTGOING porteur — calée sur le délai de livraison. */
+        long outgoingDurationTicks;
+        /** Vrai si ce corbeau de livraison transporte une lettre retournée (le destinataire AFK la renvoie). */
+        boolean isReturn;
 
         Bird(Kind k, Mob c, ServerPlayer p, Vec3 origin) {
             this.kind = k; this.chicken = c; this.player = p; this.origin = origin;
@@ -90,9 +111,10 @@ public class CorbeauManager {
         final UUID msgId;
         final String sender, subject, body;
         final long deliverAtTick;
-        PendingDelivery(UUID r, UUID id, String s, String su, String b, long t) {
+        final boolean isReturn;
+        PendingDelivery(UUID r, UUID id, String s, String su, String b, long t, boolean ret) {
             this.recipientUUID = r; this.msgId = id; this.sender = s; this.subject = su; this.body = b;
-            this.deliverAtTick = t;
+            this.deliverAtTick = t; this.isReturn = ret;
         }
     }
     private static final List<PendingDelivery> PENDING = new ArrayList<>();
@@ -101,8 +123,9 @@ public class CorbeauManager {
     public static final class QueuedMessage {
         public final UUID id;
         public final String sender, subject, body;
-        public QueuedMessage(UUID id, String s, String su, String b) {
-            this.id = id; this.sender = s; this.subject = su; this.body = b;
+        public final boolean isReturn;
+        public QueuedMessage(UUID id, String s, String su, String b, boolean ret) {
+            this.id = id; this.sender = s; this.subject = su; this.body = b; this.isReturn = ret;
         }
     }
     private static final Map<UUID, Deque<QueuedMessage>> QUEUE = new ConcurrentHashMap<>();
@@ -218,62 +241,305 @@ public class CorbeauManager {
             return;
         }
 
-        Bird b = spawnBird(player, Kind.SUMMON);
-        if (b == null) return;
-        player.sendSystemMessage(Component.literal(
-            "§8§oUn battement d'ailes au loin... le corbeau approche."));
+        List<String> recipients = peekPendingGroup(player);
+        boolean spawned = spawnSummonBirds(player, recipients);
+        if (!spawned) return;
+        int count = Math.max(1, recipients.size());
+        String msg = count > 1
+            ? "§8§oDes battements d'ailes au loin... " + count + " corbeaux approchent."
+            : "§8§oUn battement d'ailes au loin... le corbeau approche.";
+        player.sendSystemMessage(Component.literal(msg));
     }
 
-    public static void onMessageSent(ServerPlayer player)   { onMessageSent(player, 1); }
+    public static void onMessageSent(ServerPlayer player) { startAllOutgoingSummon(player, 400, 80, true); }
 
-    public static void onMessageSent(ServerPlayer player, int fanCount) {
-        Bird mainBird = startOutgoingSummon(player, 32, 28);
-        if (mainBird == null || fanCount <= 1) return;
-        // Éventail : spawn (fanCount - 1) corbeaux décoratifs partants depuis la même position
-        Vec3 origin = mainBird.chicken.position();
-        double baseAngle = Math.atan2(player.getLookAngle().z, player.getLookAngle().x) + Math.PI;
-        for (int i = 1; i < fanCount; i++) {
-            double spread = ((i % 2 == 0) ? -1 : 1) * (Math.PI / 7) * ((i + 1) / 2);
-            double a = baseAngle + spread;
-            Vec3 target = origin.add(Math.cos(a) * 32, 28, Math.sin(a) * 32);
-            spawnFanBird(player, origin, target);
-        }
-    }
+    public static void onMessageSent(ServerPlayer player, int fanCount) { onMessageSent(player); }
 
-    public static void onLetterCancelled(ServerPlayer player) { startOutgoingSummon(player, 18, 16); }
+    public static void onLetterCancelled(ServerPlayer player) { startAllOutgoingSummon(player, 18, 16, false); }
 
-    private static Bird startOutgoingSummon(ServerPlayer player, int horizontal, int vertical) {
+    /**
+     * Fait décoller tous les oiseaux SUMMON en attente pour ce joueur.
+     *
+     * @param useRecipientDir {@code true} → chaque oiseau vole vers son destinataire ;
+     *                        {@code false} → direction de repli (annulation)
+     */
+    private static void startAllOutgoingSummon(ServerPlayer player, int horizontal, int vertical,
+                                               boolean useRecipientDir) {
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
-                if (b.player == player && b.kind == Kind.SUMMON && b.phase == Phase.WAITING) {
-                    b.phase = Phase.OUTGOING; b.ticks = 0;
-                    Vec3 dir = player.getLookAngle().reverse();
-                    b.flyTo = player.getEyePosition().add(dir.x * horizontal, vertical, dir.z * horizontal);
-                    return b;
-                }
+                if (b.player != player || b.kind != Kind.SUMMON || b.phase != Phase.WAITING) continue;
+                b.phase = Phase.OUTGOING; b.ticks = 0;
+                Vec3 fallback = player.getLookAngle().reverse();
+                Vec3 dir = useRecipientDir ? departureDir(player, b.recipientName, fallback) : fallback;
+                b.flyTo = player.getEyePosition().add(dir.x * horizontal, vertical, dir.z * horizontal);
+                if (useRecipientDir) b.chicken.setInvulnerable(false); // interceptable en vol
             }
         }
-        return null;
-    }
-
-    private static void spawnFanBird(ServerPlayer player, Vec3 origin, Vec3 target) {
-        ServerLevel level = player.serverLevel();
-        EntityType<? extends Mob> type = pickMessengerType();
-        Mob bird;
-        try { bird = type.create(level); } catch (Throwable t) { bird = EntityType.CHICKEN.create(level); }
-        if (bird == null) return;
-        bird.setPos(origin.x, origin.y, origin.z);
-        bird.setNoAi(true); bird.setSilent(true); bird.setInvulnerable(true);
-        bird.setNoGravity(true); bird.setCustomNameVisible(false);
-        level.addFreshEntity(bird);
-        Bird b = new Bird(Kind.SUMMON, bird, player, origin);
-        b.phase = Phase.OUTGOING; b.flyTo = target;
-        synchronized (BIRDS) { BIRDS.add(b); }
     }
 
     /**
-     * Calcule le délai de livraison en ticks : 10 s + 1 min par 1 000 blocs de distance.
-     * Sous orage, 50 % de chances que le délai soit doublé.
+     * Direction horizontale normalisée depuis {@code from} vers le joueur nommé {@code recipientName}.
+     * Retourne {@code fallback} si le destinataire est introuvable ou dans une autre dimension.
+     */
+    private static Vec3 departureDir(ServerPlayer from, String recipientName, Vec3 fallback) {
+        if (recipientName == null || from.getServer() == null) return fallback;
+        ServerPlayer recipient = from.getServer().getPlayerList().getPlayerByName(recipientName);
+        if (recipient == null || !recipient.level().dimension().equals(from.level().dimension())) return fallback;
+        Vec3 delta = recipient.position().subtract(from.position());
+        double hDistSq = delta.x * delta.x + delta.z * delta.z;
+        if (hDistSq < 1.0) return fallback;
+        double len = Math.sqrt(hDistSq);
+        return new Vec3(delta.x / len, 0, delta.z / len);
+    }
+
+    /**
+     * Calcule le délai de livraison en ticks : 10 s + 1 min par 100 blocs de distance.
+     * Sous orage, 50 % de chances que le délai soit doublé.---- Minecraft Crash Report ----
+// My bad.
+
+Time: 2026-05-18 16:58:29
+Description: mouseClicked event handler
+
+java.lang.NoSuchMethodError: 'com.mojang.brigadier.builder.LiteralArgumentBuilder net.minecraft.commands.Commands.literal(java.lang.String)'
+	at com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
+	at com.crowcommunication.corbeau.CorbeauCommand.onRegister(CorbeauCommand.java:34) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
+	at com.crowcommunication.corbeau.__CorbeauCommand_onRegister_RegisterCommandsEvent.invoke(.dynamic) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading,pl:eventbus:B}
+	at net.minecraftforge.eventbus.ASMEventHandler.invoke(ASMEventHandler.java:55) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:312) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:298) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.event.ForgeEventFactory.onCommandRegister(ForgeEventFactory.java:817) ~[forge-1.20.1-47.4.20-universal.jar%23181!/:?] {re:classloading}
+	at net.minecraft.commands.Commands.<init>(Commands.java:221) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.ReloadableServerResources.<init>(ReloadableServerResources.java:41) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.ReloadableServerResources.m_247740_(ReloadableServerResources.java:75) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.WorldLoader.m_214362_(WorldLoader.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_246486_(WorldOpenFlows.java:162) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233122_(WorldOpenFlows.java:113) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.doLoadLevel(WorldOpenFlows.java:181) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233145_(WorldOpenFlows.java:169) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233133_(WorldOpenFlows.java:65) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101744_(WorldSelectionList.java:575) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101704_(WorldSelectionList.java:474) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_6375_(WorldSelectionList.java:416) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.components.AbstractSelectionList.m_6375_(AbstractSelectionList.java:298) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:client.gui.AbstractListAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiList,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiMultiplayer,pl:mixin:A}
+	at net.minecraft.client.gui.components.events.ContainerEventHandler.m_6375_(ContainerEventHandler.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:computing_frames,re:classloading}
+	at net.minecraft.client.MouseHandler.m_168084_(MouseHandler.java:92) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
+	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
+	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
+	at com.mojang.blaze3d.systems.RenderSystem.limitDisplayFPS(RenderSystem.java:237) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading,pl:mixin:APP:mixins.essential.json:client.Mixin_SuppressScreenshotBufferFlip,pl:mixin:A}
+	at net.minecraft.client.Minecraft.m_91383_(Minecraft.java:1173) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:718) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
+	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
+	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
+
+
+A detailed walkthrough of the error, its code path and all known details is as follows:
+---------------------------------------------------------------------------------------
+
+-- Head --
+Thread: Render thread
+Suspected Mod: 
+	Crow Communication Mod (crowcommunication), Version: 1.0.0
+		Issue tracker URL: https://github.com/Akirabane/crowcommunication/issues
+		at TRANSFORMER/crowcommunication@1.0.0/com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43)
+Stacktrace:
+	at com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
+	at com.crowcommunication.corbeau.CorbeauCommand.onRegister(CorbeauCommand.java:34) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
+	at com.crowcommunication.corbeau.__CorbeauCommand_onRegister_RegisterCommandsEvent.invoke(.dynamic) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading,pl:eventbus:B}
+	at net.minecraftforge.eventbus.ASMEventHandler.invoke(ASMEventHandler.java:55) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:312) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:298) ~[eventbus-6.2.33.jar%2387!/:?] {}
+	at net.minecraftforge.event.ForgeEventFactory.onCommandRegister(ForgeEventFactory.java:817) ~[forge-1.20.1-47.4.20-universal.jar%23181!/:?] {re:classloading}
+	at net.minecraft.commands.Commands.<init>(Commands.java:221) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.ReloadableServerResources.<init>(ReloadableServerResources.java:41) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.ReloadableServerResources.m_247740_(ReloadableServerResources.java:75) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.server.WorldLoader.m_214362_(WorldLoader.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_246486_(WorldOpenFlows.java:162) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233122_(WorldOpenFlows.java:113) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.doLoadLevel(WorldOpenFlows.java:181) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233145_(WorldOpenFlows.java:169) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233133_(WorldOpenFlows.java:65) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101744_(WorldSelectionList.java:575) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101704_(WorldSelectionList.java:474) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_6375_(WorldSelectionList.java:416) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.gui.components.AbstractSelectionList.m_6375_(AbstractSelectionList.java:298) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:client.gui.AbstractListAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiList,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiMultiplayer,pl:mixin:A}
+	at net.minecraft.client.gui.components.events.ContainerEventHandler.m_6375_(ContainerEventHandler.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:computing_frames,re:classloading}
+	at net.minecraft.client.MouseHandler.m_168084_(MouseHandler.java:92) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
+	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
+	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
+-- Affected screen --
+Details:
+	Screen name: net.minecraft.client.gui.screens.worldselection.SelectWorldScreen
+Stacktrace:
+	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
+	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
+	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
+	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
+	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
+	at com.mojang.blaze3d.systems.RenderSystem.limitDisplayFPS(RenderSystem.java:237) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading,pl:mixin:APP:mixins.essential.json:client.Mixin_SuppressScreenshotBufferFlip,pl:mixin:A}
+	at net.minecraft.client.Minecraft.m_91383_(Minecraft.java:1173) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:718) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
+	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
+	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
+
+
+-- Last reload --
+Details:
+	Reload number: 1
+	Reload reason: initial
+	Finished: Yes
+	Packs: vanilla, mod_resources, Essential Assets, essential
+Stacktrace:
+	at net.minecraft.client.ResourceLoadStateTracker.m_168562_(ResourceLoadStateTracker.java:49) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
+	at net.minecraft.client.Minecraft.m_91354_(Minecraft.java:2326) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:735) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
+	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
+	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
+	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
+	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
+	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
+
+
+-- System Details --
+Details:
+	Minecraft Version: 1.20.1
+	Minecraft Version ID: 1.20.1
+	Operating System: Windows 11 (amd64) version 10.0
+	Java Version: 17.0.15, Microsoft
+	Java VM Version: OpenJDK 64-Bit Server VM (mixed mode), Microsoft
+	Memory: 1022406440 bytes (975 MiB) / 1778384896 bytes (1696 MiB) up to 16777216000 bytes (16000 MiB)
+	CPUs: 32
+	Processor Vendor: GenuineIntel
+	Processor Name: Intel(R) Core(TM) i9-14900KF
+	Identifier: Intel64 Family 6 Model 183 Stepping 1
+	Microarchitecture: unknown
+	Frequency (GHz): 3.19
+	Number of physical packages: 1
+	Number of physical CPUs: 24
+	Number of logical CPUs: 32
+	Graphics card #0 name: Meta Virtual Monitor
+	Graphics card #0 vendor: Meta Inc.
+	Graphics card #0 VRAM (MB): 0.00
+	Graphics card #0 deviceId: unknown
+	Graphics card #0 versionInfo: DriverVersion=11.1.45.729
+	Graphics card #1 name: Parsec Virtual Display Adapter
+	Graphics card #1 vendor: Parsec Cloud, Inc.
+	Graphics card #1 VRAM (MB): 0.00
+	Graphics card #1 deviceId: unknown
+	Graphics card #1 versionInfo: DriverVersion=0.45.0.0
+	Graphics card #2 name: NVIDIA GeForce RTX 5080
+	Graphics card #2 vendor: NVIDIA (0x10de)
+	Graphics card #2 VRAM (MB): 4095.00
+	Graphics card #2 deviceId: 0x2c02
+	Graphics card #2 versionInfo: DriverVersion=32.0.15.9621
+	Memory slot #0 capacity (MB): 32768.00
+	Memory slot #0 clockSpeed (GHz): 6.00
+	Memory slot #0 type: Unknown
+	Memory slot #1 capacity (MB): 32768.00
+	Memory slot #1 clockSpeed (GHz): 6.00
+	Memory slot #1 type: Unknown
+	Virtual memory max (MB): 69415.02
+	Virtual memory used (MB): 32641.62
+	Swap memory total (MB): 4096.00
+	Swap memory used (MB): 0.00
+	JVM Flags: 4 total; -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump -Xss1M -Xmx16000m -Xms256m
+	Launched Version: forge-47.4.20
+	Backend library: LWJGL version 3.3.1 build 7
+	Backend API: NVIDIA GeForce RTX 5080/PCIe/SSE2 GL version 4.6.0 NVIDIA 596.21, NVIDIA Corporation
+	Window size: 1920x1009
+	GL Caps: Using framebuffer using OpenGL 3.2
+	GL debug messages: 
+	Using VBOs: Yes
+	Is Modded: Definitely; Client brand changed to 'forge'
+	Type: Client (map_client.txt)
+	Graphics mode: fancy
+	Resource Packs: 
+	Current Language: en_us
+	CPU: 32x Intel(R) Core(TM) i9-14900KF
+	ModLauncher: 10.0.9+10.0.9+main.dcd20f30
+	ModLauncher launch target: forgeclient
+	ModLauncher naming: srg
+	ModLauncher services: 
+		mixin-0.8.5.jar mixin PLUGINSERVICE 
+		eventbus-6.2.33.jar eventbus PLUGINSERVICE 
+		fmlloader-1.20.1-47.4.20.jar slf4jfixer PLUGINSERVICE 
+		fmlloader-1.20.1-47.4.20.jar object_holder_definalize PLUGINSERVICE 
+		fmlloader-1.20.1-47.4.20.jar runtime_enum_extender PLUGINSERVICE 
+		fmlloader-1.20.1-47.4.20.jar capability_token_subclass PLUGINSERVICE 
+		accesstransformers-8.0.4.jar accesstransformer PLUGINSERVICE 
+		fmlloader-1.20.1-47.4.20.jar runtimedistcleaner PLUGINSERVICE 
+		modlauncher-10.0.9.jar mixin TRANSFORMATIONSERVICE 
+		modlauncher-10.0.9.jar essential-loader TRANSFORMATIONSERVICE 
+		modlauncher-10.0.9.jar fml TRANSFORMATIONSERVICE 
+	FML Language Providers: 
+		minecraft@1.0
+		lowcodefml@null
+		javafml@null
+	Mod List: 
+		client-1.20.1-20230612.114412-srg.jar             |Minecraft                     |minecraft                     |1.20.1              |DONE      |Manifest: a1:d4:5e:04:4f:d3:d6:e0:7b:37:97:cf:77:b0:de:ad:4a:47:ce:8c:96:49:5f:0a:cf:8c:ae:b2:6d:4b:8a:3f
+		naturalist-5.0pre2+forge-1.20.1.jar               |Naturalist                    |naturalist                    |5.0pre2             |DONE      |Manifest: NOSIGNATURE
+		crowcommunication-1.0.0.jar                       |Crow Communication Mod        |crowcommunication             |1.0.0               |DONE      |Manifest: NOSIGNATURE
+		mcef-forge-2.1.6-1.20.1.jar                       |MCEF (Minecraft Chromium Embed|mcef                          |2.1.6-1.20.1        |DONE      |Manifest: NOSIGNATURE
+		forge-1.20.1-47.4.20-universal.jar                |Forge                         |forge                         |47.4.20             |DONE      |Manifest: NOSIGNATURE
+		midnightlib-1.4.2-forge.jar                       |MidnightLib                   |midnightlib                   |1.4.2               |DONE      |Manifest: NOSIGNATURE
+		geckolib-forge-1.20.1-4.8.3.jar                   |GeckoLib 4                    |geckolib                      |4.8.3               |DONE      |Manifest: NOSIGNATURE
+		Essential (forge_1.20.1).jar                      |Essential                     |essential                     |1.3.10.8            |DONE      |Manifest: NOSIGNATURE
+	Crash Report UUID: ccd0b913-6d00-4b8d-a301-9f707cdbefef
+	FML: 47.4
+	Forge: net.minecraftforge:47.4.20
      *
      * @param sender    l'expéditeur
      * @param recipient le destinataire
@@ -281,7 +547,7 @@ public class CorbeauManager {
      */
     public static long computeDeliveryDelayTicks(ServerPlayer sender, ServerPlayer recipient) {
         double dist = senderDistance(sender, recipient);
-        long seconds = 10L + (long) Math.floor(dist / 1000.0 * 60.0);
+        long seconds = 10L + (long) Math.floor(dist / 100.0 * 60.0);
         long ticks = seconds * 20L;
         // Météo : sous orage/pluie forte, 50% de chance que le corbeau "se perde" → delay x2
         Level lvl = sender.level();
@@ -307,7 +573,12 @@ public class CorbeauManager {
 
     public static ServerPlayer findPlayer(MinecraftServer server, ServerPlayer sender, String name) {
         if (name == null || name.isEmpty()) return null;
-        if (sender != null && name.equalsIgnoreCase(sender.getGameProfile().getName())) return sender;
+        // Auto-envoi interdit : ne jamais résoudre le nom de l'expéditeur lui-même.
+        if (sender != null) {
+            String selfName = sender.getGameProfile().getName();
+            if (selfName != null && selfName.equalsIgnoreCase(name)) return null;
+            if (name.equals(sender.getStringUUID())) return null;
+        }
         for (ServerPlayer sp : server.getPlayerList().getPlayers())
             if (sp.getGameProfile().getName().equalsIgnoreCase(name)) return sp;
         return null;
@@ -323,12 +594,63 @@ public class CorbeauManager {
      * @param body       corps de la lettre
      * @param delayTicks délai en ticks avant l'entrée en queue
      */
-    public static void scheduleDelivery(MinecraftServer server, ServerPlayer recipient,
+    public static UUID scheduleDelivery(MinecraftServer server, ServerPlayer recipient,
                                         String senderName, String subject, String body, long delayTicks) {
+        return scheduleDeliveryInternal(server, recipient.getUUID(), senderName, subject, body, delayTicks, false);
+    }
+
+    /**
+     * Programme un renvoi vers le joueur identifié par {@code recipientUUID}. Marqué {@code isReturn}
+     * pour que le timeout de second tour fasse tomber la lettre au sol au lieu de boucler.
+     */
+    private static UUID scheduleReturnDelivery(MinecraftServer server, UUID recipientUUID,
+                                               String senderName, String subject, String body, long delayTicks) {
+        return scheduleDeliveryInternal(server, recipientUUID, senderName, subject, body, delayTicks, true);
+    }
+
+    private static UUID scheduleDeliveryInternal(MinecraftServer server, UUID recipientUUID,
+                                                 String senderName, String subject, String body,
+                                                 long delayTicks, boolean isReturn) {
         long deliverAt = server.getTickCount() + delayTicks;
         UUID msgId = UUID.randomUUID();
         synchronized (PENDING) {
-            PENDING.add(new PendingDelivery(recipient.getUUID(), msgId, senderName, subject, body, deliverAt));
+            PENDING.add(new PendingDelivery(recipientUUID, msgId, senderName, subject, body, deliverAt, isReturn));
+        }
+        return msgId;
+    }
+
+    /**
+     * Attribue le contenu de la lettre aux corbeaux SUMMON OUTGOING du joueur,
+     * pour permettre l'interception (drop + annulation de livraison si tué).
+     *
+     * @param player  l'expéditeur
+     * @param subject objet de la lettre
+     * @param body    corps de la lettre
+     * @param ids     IDs des livraisons programmées portées par ces corbeaux
+     */
+    public static void assignOutgoingLetter(ServerPlayer player, String subject, String body,
+                                            List<String> recipientNames, List<UUID> ids, List<Long> delays) {
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.player != player || b.kind != Kind.SUMMON || b.phase != Phase.OUTGOING) continue;
+                if (b.recipientName == null) continue;
+                int idx = -1;
+                for (int i = 0; i < recipientNames.size(); i++) {
+                    if (recipientNames.get(i).equalsIgnoreCase(b.recipientName)) { idx = i; break; }
+                }
+                if (idx < 0) continue;
+                b.outSubject = subject;
+                b.outBody = body;
+                b.deliveryIds = new ArrayList<>(List.of(ids.get(idx)));
+                b.outgoingDurationTicks = delays.get(idx);
+            }
+        }
+    }
+
+    private static void cancelDeliveries(List<UUID> ids) {
+        if (ids == null || ids.isEmpty()) return;
+        synchronized (PENDING) {
+            PENDING.removeIf(d -> ids.contains(d.msgId));
         }
     }
 
@@ -396,29 +718,47 @@ public class CorbeauManager {
         return EntityType.CHICKEN;
     }
 
+    /**
+     * Spawne N oiseaux SUMMON en éventail autour du joueur (un par destinataire).
+     * L'oiseau central ({@code isMain=true}) ouvrira l'UI ; les autres hovèrent en attente.
+     *
+     * @return {@code true} si au moins un oiseau a été spawné
+     */
+    private static boolean spawnSummonBirds(ServerPlayer player, List<String> recipients) {
+        int count = Math.max(1, recipients.size());
+        Vec3 look = player.getLookAngle();
+        double baseAngle = (new Vec3(look.x, 0, look.z).lengthSqr() < 1e-4)
+            ? player.getRandom().nextDouble() * Math.PI * 2.0
+            : Math.atan2(look.z, look.x);
+
+        boolean anySpawned = false;
+        for (int i = 0; i < count; i++) {
+            double spread = (i == 0) ? 0 : ((i % 2 == 0) ? -1 : 1) * (Math.PI / 7) * ((i + 1) / 2);
+            Bird b = spawnBirdAtAngle(player, Kind.SUMMON, baseAngle + spread);
+            if (b == null) continue;
+            b.isMain = (i == 0);
+            b.recipientName = (i < recipients.size()) ? recipients.get(i) : null;
+            anySpawned = true;
+        }
+        return anySpawned;
+    }
+
+    /** Spawne un oiseau de livraison depuis une direction aléatoire. */
     private static Bird spawnBird(ServerPlayer player, Kind kind) {
+        double angle = player.getRandom().nextDouble() * Math.PI * 2.0;
+        return spawnBirdAtAngle(player, kind, angle);
+    }
+
+    /**
+     * Spawne un oiseau depuis la position calculée à partir de {@code angle} horizontal.
+     * Le point de spawn est à 40 blocs dans cette direction et 35 blocs au-dessus du joueur.
+     */
+    private static Bird spawnBirdAtAngle(ServerPlayer player, Kind kind, double angle) {
         ServerLevel level = player.serverLevel();
         Vec3 eye = player.getEyePosition();
-        Vec3 spawn;
-        if (kind == Kind.DELIVERY) {
-            // Direction aléatoire — interceptable de n'importe où
-            double angle = player.getRandom().nextDouble() * Math.PI * 2.0;
-            Vec3 dir = new Vec3(Math.cos(angle), 0, Math.sin(angle));
-            spawn = eye.add(dir.scale(40)).add(0, 35, 0);
-        } else {
-            // SUMMON : 40 blocs DEVANT le joueur (où il regarde), 35 verticaux
-            // → le joueur le voit arriver, jamais "sur la tête"
-            Vec3 look = player.getLookAngle();
-            Vec3 horiz = new Vec3(look.x, 0, look.z);
-            if (horiz.lengthSqr() < 1e-4) {
-                // Joueur regarde droit en haut/bas : on prend une direction aléatoire
-                double a = player.getRandom().nextDouble() * Math.PI * 2.0;
-                horiz = new Vec3(Math.cos(a), 0, Math.sin(a));
-            } else {
-                horiz = horiz.normalize();
-            }
-            spawn = eye.add(horiz.scale(40)).add(0, 35, 0);
-        }
+        Vec3 dir = new Vec3(Math.cos(angle), 0, Math.sin(angle));
+        Vec3 spawn = eye.add(dir.scale(40)).add(0, 35, 0);
+
         EntityType<? extends Mob> type = pickMessengerType();
         Mob bird;
         try {
@@ -486,6 +826,26 @@ public class CorbeauManager {
                 match.player.sendSystemMessage(Component.literal(
                     "§c§oUn corbeau s'est écroulé en plein vol — une lettre de §f" + match.sender + "§c ne t'arrivera jamais."));
             }
+        } else if (match.kind == Kind.SUMMON && match.phase == Phase.OUTGOING && match.outSubject != null) {
+            // Corbeau porteur abattu en vol — lettre tombe, livraison annulée
+            if (mob.level() instanceof ServerLevel sl) {
+                ItemStack letter = makeLetterItem(match.player.getGameProfile().getName(), match.outSubject, match.outBody);
+                Vec3 p = mob.position();
+                ItemEntity drop = new ItemEntity(sl, p.x, p.y + 0.4, p.z, letter);
+                drop.setDeltaMovement(0, 0.1, 0);
+                sl.addFreshEntity(drop);
+                sl.sendParticles(ParticleTypes.POOF, p.x, p.y + 0.5, p.z, 14, 0.4, 0.3, 0.4, 0.03);
+                sl.sendParticles(ParticleTypes.ASH,  p.x, p.y + 0.5, p.z, 18, 0.5, 0.4, 0.5, 0.04);
+            }
+            cancelDeliveries(match.deliveryIds);
+            match.player.sendSystemMessage(Component.literal(
+                "§c§oTon corbeau a été abattu en plein vol — ta lettre est tombée quelque part."));
+            if (event.getSource().getEntity() instanceof ServerPlayer killer
+                    && !killer.getUUID().equals(match.player.getUUID())) {
+                killer.sendSystemMessage(Component.literal(
+                    "§e§oTu as abattu le messager de §f" + match.player.getGameProfile().getName()
+                    + "§e — une lettre est tombée quelque part."));
+            }
         }
     }
 
@@ -502,7 +862,7 @@ public class CorbeauManager {
             for (PendingDelivery d : PENDING) {
                 if (now >= d.deliverAtTick) {
                     QUEUE.computeIfAbsent(d.recipientUUID, k -> new ArrayDeque<>())
-                         .addLast(new QueuedMessage(d.msgId, d.sender, d.subject, d.body));
+                         .addLast(new QueuedMessage(d.msgId, d.sender, d.subject, d.body, d.isReturn));
                     done.add(d);
                 }
             }
@@ -547,8 +907,10 @@ public class CorbeauManager {
         b.sender = msg.sender;
         b.subject = msg.subject;
         b.body = msg.body;
-        player.sendSystemMessage(Component.literal(
-            "§8§oUn corbeau approche, une lettre attachée à la patte..."));
+        b.isReturn = msg.isReturn;
+        player.sendSystemMessage(Component.literal(msg.isReturn
+            ? "§8§oUn corbeau revient des cieux — il rapporte une lettre que tu avais envoyée..."
+            : "§8§oUn corbeau approche, une lettre attachée à la patte..."));
     }
 
     // ============================ Tick d'un oiseau ============================
@@ -563,10 +925,39 @@ public class CorbeauManager {
                         SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.5f, 0.6f);
                 }
                 spawnFeatherTrail(b.chicken);
-                if (moveTowardWithArc(b.chicken, b.flyTo, 0.55) || b.ticks > 20 * 8) {
-                    poof(b.chicken);
-                    b.chicken.discard();
-                    toRemove.add(b);
+
+                boolean carryingLetter = b.kind == Kind.SUMMON
+                    && b.outSubject != null && b.outgoingDurationTicks > 0 && b.recipientName != null;
+
+                if (carryingLetter) {
+                    // Le corbeau suit le destinataire en temps réel — vitesse calée pour
+                    // arriver à l'instant de livraison. Il reste vulnérable (interceptable).
+                    MinecraftServer server = b.player.getServer();
+                    ServerPlayer recipient = (server == null)
+                        ? null : server.getPlayerList().getPlayerByName(b.recipientName);
+                    Vec3 targetPos;
+                    if (recipient != null && !recipient.isRemoved()
+                            && recipient.level().dimension().equals(b.chicken.level().dimension())) {
+                        targetPos = recipient.position().add(0, 1.6, 0);
+                    } else {
+                        targetPos = b.flyTo; // dernière direction connue, fallback
+                    }
+                    long ticksRemaining = Math.max(1L, b.outgoingDurationTicks - b.ticks);
+                    double distRemaining = b.chicken.position().distanceTo(targetPos);
+                    double speed = Math.max(0.4, Math.min(2.5, distRemaining / ticksRemaining));
+                    boolean reached = moveTowardWithArc(b.chicken, targetPos, speed);
+                    if (reached || b.ticks >= b.outgoingDurationTicks) {
+                        poof(b.chicken);
+                        b.chicken.discard();
+                        toRemove.add(b);
+                    }
+                } else {
+                    // OUTGOING simple (annulation / sans lettre) — vol bref de repli.
+                    if (moveTowardWithArc(b.chicken, b.flyTo, 1.2) || b.ticks > 20 * 90) {
+                        poof(b.chicken);
+                        b.chicken.discard();
+                        toRemove.add(b);
+                    }
                 }
             }
         }
@@ -627,8 +1018,11 @@ public class CorbeauManager {
         }
 
         if (b.kind == Kind.SUMMON) {
-            String recipients = String.join(", ", peekPendingGroup(b.player));
-            NetworkHandler.sendToClient(new PacketOpenCompose(recipients), b.player);
+            // Seul l'oiseau principal ouvre l'UI — les autres hovèrent en silence
+            if (b.isMain) {
+                String recipients = String.join(", ", peekPendingGroup(b.player));
+                NetworkHandler.sendToClient(new PacketOpenCompose(recipients), b.player);
+            }
         } else { // DELIVERY → décision via chat clickable uniquement
             showLetterInChat(b);
         }
@@ -641,8 +1035,11 @@ public class CorbeauManager {
 
         ChatFormatting seal = sealColorFor(b.sender);
         String sealChar = "§" + seal.getChar() + "● ";
-        Component header = Component.literal("§6───────── §e§l✉ §6§lUne lettre §6─────────");
-        Component meta = Component.literal(sealChar + "§7De §b" + b.sender + " §7· §f§o" + b.subject);
+        Component header = b.isReturn
+            ? Component.literal("§6───────── §c§l↩ §6§lLettre retournée §6─────────")
+            : Component.literal("§6───────── §e§l✉ §6§lUne lettre §6─────────");
+        String metaPrefix = b.isReturn ? "§7Ta lettre §7· §f§o" : "§7De §b" + b.sender + " §7· §f§o";
+        Component meta = Component.literal(sealChar + metaPrefix + b.subject);
 
         MutableJoin actions = new MutableJoin();
         actions.add(Component.literal("§a§l[ Garder la lettre ]")
@@ -680,7 +1077,13 @@ public class CorbeauManager {
     }
 
     private static void tickWaiting(Bird b) {
-        Vec3 hover = b.player.getEyePosition().add(b.player.getLookAngle().scale(2.2));
+        // Décalage latéral léger pour séparer visuellement les oiseaux en groupe
+        Vec3 look = b.player.getLookAngle();
+        Vec3 right = new Vec3(-look.z, 0, look.x).normalize();
+        float slot = b.recipientName != null ? (Math.abs(b.recipientName.hashCode()) % 5) - 2 : 0;
+        Vec3 hover = b.player.getEyePosition()
+            .add(look.scale(2.2))
+            .add(right.scale(slot * 0.55));
         double off = Math.sin(b.ticks * 0.14) * 0.09;
         b.chicken.moveTo(hover.x, hover.y + off, hover.z, b.chicken.getYRot(), 0);
         Vec3 lookVec = b.player.position().subtract(b.chicken.position());
@@ -693,29 +1096,41 @@ public class CorbeauManager {
         }
         if (b.ticks % 12 == 0) spawnFeatherTrail(b.chicken);
 
-        // Timeout 15s : si pas de réponse, le corbeau repart avec la lettre.
-        if (b.ticks > 20 * 15) {
-            if (b.kind == Kind.DELIVERY) {
-                // Retour à l'expéditeur : on lui rend la lettre directement, sans nouvelle livraison.
+        // Timeout DELIVERY 15 s / SUMMON 10 min (filet de sécurité zombie-bird uniquement)
+        int timeoutTicks = b.kind == Kind.DELIVERY ? 20 * 15 : 20 * 60 * 10;
+        if (b.ticks > timeoutTicks) {
+            if (b.kind == Kind.DELIVERY && !b.isReturn) {
+                // Premier timeout — la lettre est renvoyée à l'expéditeur comme une nouvelle livraison.
                 MinecraftServer server = b.player.getServer();
-                ServerPlayer originalSender = (server == null) ? null
-                    : server.getPlayerList().getPlayerByName(b.sender);
-                if (originalSender != null) {
-                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
-                    Vec3 front = originalSender.getEyePosition()
-                        .add(originalSender.getLookAngle().scale(1.5)).add(0, -0.5, 0);
-                    if (originalSender.level() instanceof ServerLevel sl) {
-                        ItemEntity drop = new ItemEntity(sl,
-                            front.x, front.y, front.z, returned);
-                        drop.setDeltaMovement(0, 0.12, 0);
-                        sl.addFreshEntity(drop);
+                UUID originalSenderUUID = null;
+                if (server != null) {
+                    ServerPlayer online = server.getPlayerList().getPlayerByName(b.sender);
+                    if (online != null) {
+                        originalSenderUUID = online.getUUID();
+                    } else {
+                        try {
+                            originalSenderUUID = server.getProfileCache()
+                                .get(b.sender).map(prof -> prof.getId()).orElse(null);
+                        } catch (Throwable ignored) {}
                     }
-                    originalSender.sendSystemMessage(Component.literal(
-                        "§8§oLe corbeau est revenu — §f" + b.player.getGameProfile().getName()
-                        + "§8§o n'a pas pris ta lettre, elle est tombée devant toi."));
+                }
+                if (server != null && originalSenderUUID != null) {
+                    scheduleReturnDelivery(server, originalSenderUUID, b.sender, b.subject, b.body, 20L * 10L);
                 }
                 b.player.sendSystemMessage(Component.literal(
                     "§8§oLasse d'attendre, le corbeau s'envole — il rapporte la lettre à son expéditeur."));
+            } else if (b.kind == Kind.DELIVERY && b.isReturn) {
+                // Second timeout (retour ignoré) — la lettre tombe au sol devant l'expéditeur, sans auto-ramassage.
+                if (b.player.level() instanceof ServerLevel sl) {
+                    Vec3 dropPos = b.chicken.position().add(0, -0.5, 0);
+                    ItemStack returned = makeLetterItem(b.sender, b.subject, b.body);
+                    ItemEntity drop = new ItemEntity(sl, dropPos.x, dropPos.y, dropPos.z, returned);
+                    drop.setDeltaMovement(0, 0.05, 0);
+                    drop.setPickUpDelay(60); // 3 s avant qu'on puisse la ramasser, pour qu'elle soit visible
+                    sl.addFreshEntity(drop);
+                }
+                b.player.sendSystemMessage(Component.literal(
+                    "§8§oLa lettre a glissé du bec du corbeau — elle est tombée à terre devant toi."));
             } else {
                 b.player.sendSystemMessage(Component.literal(
                     "§8§oLasse d'attendre, le corbeau s'envole avec sa lettre."));

@@ -56,6 +56,7 @@ public class PacketSendMessage {
             for (String name : targets) {
                 ServerPlayer r = CorbeauManager.findPlayer(server, sender, name);
                 if (r == null) { rejected.add(name); continue; }
+                if (r == sender) continue; // garde absolue contre l'auto-envoi
                 if (CorbeauManager.senderDistance(sender, r) > CorbeauManager.MAX_DELIVERY_DISTANCE) {
                     lost.add(r.getGameProfile().getName()); continue;
                 }
@@ -75,21 +76,28 @@ public class PacketSendMessage {
                 return;
             }
 
+            List<java.util.UUID> deliveryIds = new ArrayList<>();
+            List<String> recipientNames = new ArrayList<>();
+            List<Long> delays = new ArrayList<>();
             for (ServerPlayer recipient : validRecipients) {
                 long delayTicks = CorbeauManager.computeDeliveryDelayTicks(sender, recipient);
                 long delaySec = delayTicks / 20L;
-                CorbeauManager.scheduleDelivery(server, recipient,
+                java.util.UUID msgId = CorbeauManager.scheduleDelivery(server, recipient,
                     sender.getGameProfile().getName(), p.subject, p.body, delayTicks);
+                deliveryIds.add(msgId);
+                recipientNames.add(recipient.getGameProfile().getName());
+                delays.add(delayTicks);
                 String prettyTime = delaySec < 60
                     ? delaySec + " s"
                     : (delaySec / 60) + " min " + (delaySec % 60) + " s";
-                String to = (recipient == sender) ? "toi-même" : recipient.getGameProfile().getName();
                 sender.sendSystemMessage(Component.literal(
-                    "§8§oUn corbeau s'envole vers §f" + to + "§8 — livraison estimée dans §f" + prettyTime + "§8."));
+                    "§8§oUn corbeau s'envole vers §f" + recipient.getGameProfile().getName()
+                    + "§8 — livraison estimée dans §f" + prettyTime + "§8."));
             }
 
             CorbeauManager.markSent(sender);
             CorbeauManager.onMessageSent(sender, validRecipients.size());
+            CorbeauManager.assignOutgoingLetter(sender, p.subject, p.body, recipientNames, deliveryIds, delays);
         });
         ctx.get().setPacketHandled(true);
     }

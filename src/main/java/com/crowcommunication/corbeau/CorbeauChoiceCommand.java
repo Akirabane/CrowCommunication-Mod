@@ -16,6 +16,7 @@ import java.util.UUID;
  */
 public class CorbeauChoiceCommand {
 
+    @SuppressWarnings("null")
     @SubscribeEvent
     public static void onRegister(RegisterCommandsEvent event) {
         event.getDispatcher().register(
