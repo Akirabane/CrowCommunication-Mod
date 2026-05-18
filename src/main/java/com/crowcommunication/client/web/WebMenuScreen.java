@@ -19,7 +19,6 @@ import net.minecraftforge.api.distmarker.OnlyIn;
  * non fiable sur cette version de MCEF. La zone de clip reproduit exactement le layout CSS :
  * {@code width: min(680px, 92vw); margin: 5vh auto 0}.</p>
  */
-@SuppressWarnings("null")
 @OnlyIn(Dist.CLIENT)
 public class WebMenuScreen extends Screen {
 

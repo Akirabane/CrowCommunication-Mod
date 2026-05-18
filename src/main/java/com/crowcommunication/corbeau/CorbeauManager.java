@@ -64,7 +64,6 @@ import net.minecraftforge.registries.ForgeRegistries;
  * <h2>Interception</h2>
  * <p>Un corbeau {@code DELIVERY} est vulnérable : abattu à l'arc, la lettre tombe au sol.</p>
  */
-@SuppressWarnings("null")
 public class CorbeauManager {
 
     // ============================ Types ============================
@@ -187,7 +186,24 @@ public class CorbeauManager {
         String target = forgeName.trim();
         if (target.equalsIgnoreCase(real)) return real;
 
-        long now = sender.getServer() == null ? 0 : sender.getServer().getTickCount();
+        MinecraftServer server = sender.getServer();
+        // Validation : le pseudo doit correspondre à un profil connu (en ligne ou en cache).
+        // Sinon la tentative est purement silencieuse, sans coût ni cooldown.
+        if (server == null) return real;
+        boolean known = server.getPlayerList().getPlayerByName(target) != null;
+        if (!known) {
+            try {
+                known = server.getProfileCache() != null
+                    && server.getProfileCache().get(target).isPresent();
+            } catch (Throwable ignored) {}
+        }
+        if (!known) {
+            sender.sendSystemMessage(Component.literal(
+                "§8§oTu n'arrives pas à imiter un sceau que tu n'as jamais vu — §f" + target + "§8 t'est inconnu."));
+            return real;
+        }
+
+        long now = server.getTickCount();
         Long last = LAST_FORGE_ATTEMPT.get(sender.getUUID());
         if (last != null && now - last < FORGE_COOLDOWN_TICKS) {
             long secLeft = (FORGE_COOLDOWN_TICKS - (now - last)) / 20L;
@@ -198,7 +214,7 @@ public class CorbeauManager {
         }
         LAST_FORGE_ATTEMPT.put(sender.getUUID(), now);
 
-        boolean success = Math.random() < FORGE_SUCCESS_CHANCE;
+        boolean success = sender.getRandom().nextDouble() < FORGE_SUCCESS_CHANCE;
         if (success) {
             sender.sendSystemMessage(Component.literal(
                 "§6§oTon trait de plume imite à la perfection le sceau de §f" + target + "§6..."));
@@ -346,252 +362,7 @@ public class CorbeauManager {
 
     /**
      * Calcule le délai de livraison en ticks : 10 s + 1 min par 100 blocs de distance.
-     * Sous orage, 50 % de chances que le délai soit doublé.---- Minecraft Crash Report ----
-// My bad.
-
-Time: 2026-05-18 16:58:29
-Description: mouseClicked event handler
-
-java.lang.NoSuchMethodError: 'com.mojang.brigadier.builder.LiteralArgumentBuilder net.minecraft.commands.Commands.literal(java.lang.String)'
-	at com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
-	at com.crowcommunication.corbeau.CorbeauCommand.onRegister(CorbeauCommand.java:34) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
-	at com.crowcommunication.corbeau.__CorbeauCommand_onRegister_RegisterCommandsEvent.invoke(.dynamic) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading,pl:eventbus:B}
-	at net.minecraftforge.eventbus.ASMEventHandler.invoke(ASMEventHandler.java:55) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:312) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:298) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.event.ForgeEventFactory.onCommandRegister(ForgeEventFactory.java:817) ~[forge-1.20.1-47.4.20-universal.jar%23181!/:?] {re:classloading}
-	at net.minecraft.commands.Commands.<init>(Commands.java:221) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.ReloadableServerResources.<init>(ReloadableServerResources.java:41) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.ReloadableServerResources.m_247740_(ReloadableServerResources.java:75) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.WorldLoader.m_214362_(WorldLoader.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_246486_(WorldOpenFlows.java:162) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233122_(WorldOpenFlows.java:113) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.doLoadLevel(WorldOpenFlows.java:181) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233145_(WorldOpenFlows.java:169) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233133_(WorldOpenFlows.java:65) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101744_(WorldSelectionList.java:575) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101704_(WorldSelectionList.java:474) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_6375_(WorldSelectionList.java:416) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.components.AbstractSelectionList.m_6375_(AbstractSelectionList.java:298) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:client.gui.AbstractListAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiList,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiMultiplayer,pl:mixin:A}
-	at net.minecraft.client.gui.components.events.ContainerEventHandler.m_6375_(ContainerEventHandler.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:computing_frames,re:classloading}
-	at net.minecraft.client.MouseHandler.m_168084_(MouseHandler.java:92) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
-	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
-	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
-	at com.mojang.blaze3d.systems.RenderSystem.limitDisplayFPS(RenderSystem.java:237) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading,pl:mixin:APP:mixins.essential.json:client.Mixin_SuppressScreenshotBufferFlip,pl:mixin:A}
-	at net.minecraft.client.Minecraft.m_91383_(Minecraft.java:1173) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:718) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
-	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
-	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
-
-
-A detailed walkthrough of the error, its code path and all known details is as follows:
----------------------------------------------------------------------------------------
-
--- Head --
-Thread: Render thread
-Suspected Mod: 
-	Crow Communication Mod (crowcommunication), Version: 1.0.0
-		Issue tracker URL: https://github.com/Akirabane/crowcommunication/issues
-		at TRANSFORMER/crowcommunication@1.0.0/com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43)
-Stacktrace:
-	at com.crowcommunication.corbeau.CorbeauCommand.register(CorbeauCommand.java:43) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
-	at com.crowcommunication.corbeau.CorbeauCommand.onRegister(CorbeauCommand.java:34) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading}
-	at com.crowcommunication.corbeau.__CorbeauCommand_onRegister_RegisterCommandsEvent.invoke(.dynamic) ~[crowcommunication-1.0.0.jar%23172!/:1.0.0] {re:classloading,pl:eventbus:B}
-	at net.minecraftforge.eventbus.ASMEventHandler.invoke(ASMEventHandler.java:55) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:312) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:298) ~[eventbus-6.2.33.jar%2387!/:?] {}
-	at net.minecraftforge.event.ForgeEventFactory.onCommandRegister(ForgeEventFactory.java:817) ~[forge-1.20.1-47.4.20-universal.jar%23181!/:?] {re:classloading}
-	at net.minecraft.commands.Commands.<init>(Commands.java:221) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.ReloadableServerResources.<init>(ReloadableServerResources.java:41) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.ReloadableServerResources.m_247740_(ReloadableServerResources.java:75) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.server.WorldLoader.m_214362_(WorldLoader.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_246486_(WorldOpenFlows.java:162) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233122_(WorldOpenFlows.java:113) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.doLoadLevel(WorldOpenFlows.java:181) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233145_(WorldOpenFlows.java:169) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldOpenFlows.m_233133_(WorldOpenFlows.java:65) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101744_(WorldSelectionList.java:575) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_101704_(WorldSelectionList.java:474) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry.m_6375_(WorldSelectionList.java:416) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.gui.components.AbstractSelectionList.m_6375_(AbstractSelectionList.java:298) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:client.gui.AbstractListAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiList,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_SelectionListDividers_GuiMultiplayer,pl:mixin:A}
-	at net.minecraft.client.gui.components.events.ContainerEventHandler.m_6375_(ContainerEventHandler.java:38) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:computing_frames,re:classloading}
-	at net.minecraft.client.MouseHandler.m_168084_(MouseHandler.java:92) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
-	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
-	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
--- Affected screen --
-Details:
-	Screen name: net.minecraft.client.gui.screens.worldselection.SelectWorldScreen
-Stacktrace:
-	at net.minecraft.client.gui.screens.Screen.m_96579_(Screen.java:437) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.gui.GuiScreenAccessor,pl:mixin:APP:mixins.essential.json:client.gui.Mixin_GuiScreen_PostKeyTypedEvent,pl:mixin:APP:mixins.essential.json:client.gui.MixinGuiScreen,pl:mixin:APP:mixins.essential.json:client.gui.drag_drop_gui.Mixin_MuteNarration_Screen,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91530_(MouseHandler.java:89) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_168091_(MouseHandler.java:189) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at net.minecraft.util.thread.BlockableEventLoop.execute(BlockableEventLoop.java:102) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:mixins.essential.json:client.Mixin_ThreadTaskExecutor,pl:mixin:A}
-	at net.minecraft.client.MouseHandler.m_91565_(MouseHandler.java:188) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,re:classloading,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent_Priority,pl:mixin:APP:mixins.essential.json:client.MouseHelperAccessor,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiClickEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_GuiMouseReleaseEvent,pl:mixin:APP:mixins.essential.json:events.Mixin_MouseScrollEvent,pl:mixin:APP:mixins.essential.json:feature.chat.Mixin_ChatPeekScrolling,pl:mixin:A}
-	at org.lwjgl.glfw.GLFWMouseButtonCallbackI.callback(GLFWMouseButtonCallbackI.java:43) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {}
-	at org.lwjgl.system.JNI.invokeV(Native Method) ~[lwjgl-3.3.1.jar%23153!/:build 7] {}
-	at org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout(GLFW.java:3474) ~[lwjgl-glfw-3.3.1.jar%23141!/:build 7] {re:mixin}
-	at com.mojang.blaze3d.systems.RenderSystem.limitDisplayFPS(RenderSystem.java:237) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading,pl:mixin:APP:mixins.essential.json:client.Mixin_SuppressScreenshotBufferFlip,pl:mixin:A}
-	at net.minecraft.client.Minecraft.m_91383_(Minecraft.java:1173) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:718) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
-	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
-	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
-
-
--- Last reload --
-Details:
-	Reload number: 1
-	Reload reason: initial
-	Finished: Yes
-	Packs: vanilla, mod_resources, Essential Assets, essential
-Stacktrace:
-	at net.minecraft.client.ResourceLoadStateTracker.m_168562_(ResourceLoadStateTracker.java:49) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:classloading}
-	at net.minecraft.client.Minecraft.m_91354_(Minecraft.java:2326) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.Minecraft.m_91374_(Minecraft.java:735) ~[client-1.20.1-20230612.114412-srg.jar%23176!/:?] {re:mixin,pl:accesstransformer:B,re:mixin,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:A}
-	at net.minecraft.client.main.Main.main(Main.java:218) ~[forge-47.4.20.jar:?] {re:classloading}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] {}
-	at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[?:?] {}
-	at jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[?:?] {}
-	at java.lang.reflect.Method.invoke(Method.java:569) ~[?:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.runTarget(CommonLaunchHandler.java:111) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonLaunchHandler.clientService(CommonLaunchHandler.java:99) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at net.minecraftforge.fml.loading.targets.CommonClientLaunchHandler.lambda$makeService$0(CommonClientLaunchHandler.java:25) ~[fmlloader-1.20.1-47.4.20.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:30) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:71) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.run(Launcher.java:108) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.Launcher.main(Launcher.java:78) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:26) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.modlauncher.BootstrapLaunchConsumer.accept(BootstrapLaunchConsumer.java:23) ~[modlauncher-10.0.9.jar:?] {}
-	at cpw.mods.bootstraplauncher.BootstrapLauncher.main(BootstrapLauncher.java:141) ~[bootstraplauncher-1.1.2.jar:?] {}
-
-
--- System Details --
-Details:
-	Minecraft Version: 1.20.1
-	Minecraft Version ID: 1.20.1
-	Operating System: Windows 11 (amd64) version 10.0
-	Java Version: 17.0.15, Microsoft
-	Java VM Version: OpenJDK 64-Bit Server VM (mixed mode), Microsoft
-	Memory: 1022406440 bytes (975 MiB) / 1778384896 bytes (1696 MiB) up to 16777216000 bytes (16000 MiB)
-	CPUs: 32
-	Processor Vendor: GenuineIntel
-	Processor Name: Intel(R) Core(TM) i9-14900KF
-	Identifier: Intel64 Family 6 Model 183 Stepping 1
-	Microarchitecture: unknown
-	Frequency (GHz): 3.19
-	Number of physical packages: 1
-	Number of physical CPUs: 24
-	Number of logical CPUs: 32
-	Graphics card #0 name: Meta Virtual Monitor
-	Graphics card #0 vendor: Meta Inc.
-	Graphics card #0 VRAM (MB): 0.00
-	Graphics card #0 deviceId: unknown
-	Graphics card #0 versionInfo: DriverVersion=11.1.45.729
-	Graphics card #1 name: Parsec Virtual Display Adapter
-	Graphics card #1 vendor: Parsec Cloud, Inc.
-	Graphics card #1 VRAM (MB): 0.00
-	Graphics card #1 deviceId: unknown
-	Graphics card #1 versionInfo: DriverVersion=0.45.0.0
-	Graphics card #2 name: NVIDIA GeForce RTX 5080
-	Graphics card #2 vendor: NVIDIA (0x10de)
-	Graphics card #2 VRAM (MB): 4095.00
-	Graphics card #2 deviceId: 0x2c02
-	Graphics card #2 versionInfo: DriverVersion=32.0.15.9621
-	Memory slot #0 capacity (MB): 32768.00
-	Memory slot #0 clockSpeed (GHz): 6.00
-	Memory slot #0 type: Unknown
-	Memory slot #1 capacity (MB): 32768.00
-	Memory slot #1 clockSpeed (GHz): 6.00
-	Memory slot #1 type: Unknown
-	Virtual memory max (MB): 69415.02
-	Virtual memory used (MB): 32641.62
-	Swap memory total (MB): 4096.00
-	Swap memory used (MB): 0.00
-	JVM Flags: 4 total; -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump -Xss1M -Xmx16000m -Xms256m
-	Launched Version: forge-47.4.20
-	Backend library: LWJGL version 3.3.1 build 7
-	Backend API: NVIDIA GeForce RTX 5080/PCIe/SSE2 GL version 4.6.0 NVIDIA 596.21, NVIDIA Corporation
-	Window size: 1920x1009
-	GL Caps: Using framebuffer using OpenGL 3.2
-	GL debug messages: 
-	Using VBOs: Yes
-	Is Modded: Definitely; Client brand changed to 'forge'
-	Type: Client (map_client.txt)
-	Graphics mode: fancy
-	Resource Packs: 
-	Current Language: en_us
-	CPU: 32x Intel(R) Core(TM) i9-14900KF
-	ModLauncher: 10.0.9+10.0.9+main.dcd20f30
-	ModLauncher launch target: forgeclient
-	ModLauncher naming: srg
-	ModLauncher services: 
-		mixin-0.8.5.jar mixin PLUGINSERVICE 
-		eventbus-6.2.33.jar eventbus PLUGINSERVICE 
-		fmlloader-1.20.1-47.4.20.jar slf4jfixer PLUGINSERVICE 
-		fmlloader-1.20.1-47.4.20.jar object_holder_definalize PLUGINSERVICE 
-		fmlloader-1.20.1-47.4.20.jar runtime_enum_extender PLUGINSERVICE 
-		fmlloader-1.20.1-47.4.20.jar capability_token_subclass PLUGINSERVICE 
-		accesstransformers-8.0.4.jar accesstransformer PLUGINSERVICE 
-		fmlloader-1.20.1-47.4.20.jar runtimedistcleaner PLUGINSERVICE 
-		modlauncher-10.0.9.jar mixin TRANSFORMATIONSERVICE 
-		modlauncher-10.0.9.jar essential-loader TRANSFORMATIONSERVICE 
-		modlauncher-10.0.9.jar fml TRANSFORMATIONSERVICE 
-	FML Language Providers: 
-		minecraft@1.0
-		lowcodefml@null
-		javafml@null
-	Mod List: 
-		client-1.20.1-20230612.114412-srg.jar             |Minecraft                     |minecraft                     |1.20.1              |DONE      |Manifest: a1:d4:5e:04:4f:d3:d6:e0:7b:37:97:cf:77:b0:de:ad:4a:47:ce:8c:96:49:5f:0a:cf:8c:ae:b2:6d:4b:8a:3f
-		naturalist-5.0pre2+forge-1.20.1.jar               |Naturalist                    |naturalist                    |5.0pre2             |DONE      |Manifest: NOSIGNATURE
-		crowcommunication-1.0.0.jar                       |Crow Communication Mod        |crowcommunication             |1.0.0               |DONE      |Manifest: NOSIGNATURE
-		mcef-forge-2.1.6-1.20.1.jar                       |MCEF (Minecraft Chromium Embed|mcef                          |2.1.6-1.20.1        |DONE      |Manifest: NOSIGNATURE
-		forge-1.20.1-47.4.20-universal.jar                |Forge                         |forge                         |47.4.20             |DONE      |Manifest: NOSIGNATURE
-		midnightlib-1.4.2-forge.jar                       |MidnightLib                   |midnightlib                   |1.4.2               |DONE      |Manifest: NOSIGNATURE
-		geckolib-forge-1.20.1-4.8.3.jar                   |GeckoLib 4                    |geckolib                      |4.8.3               |DONE      |Manifest: NOSIGNATURE
-		Essential (forge_1.20.1).jar                      |Essential                     |essential                     |1.3.10.8            |DONE      |Manifest: NOSIGNATURE
-	Crash Report UUID: ccd0b913-6d00-4b8d-a301-9f707cdbefef
-	FML: 47.4
-	Forge: net.minecraftforge:47.4.20
+     * Sous orage, 50 % de chances que le délai soit doublé.
      *
      * @param sender    l'expéditeur
      * @param recipient le destinataire
@@ -865,10 +636,12 @@ Details:
             for (Bird b : BIRDS) if (b.chicken == mob) { match = b; break; }
         }
         if (match == null) return;
+        // RP : intercepter un corbeau est totalement silencieux. Personne n'est notifié —
+        // ni l'expéditeur, ni le destinataire, ni le tueur. Seule la lettre qui tombe au sol
+        // dit ce qui s'est passé — au tueur de la ramasser pour découvrir.
         if (match.kind == Kind.DELIVERY && match.phase != Phase.OUTGOING) {
             String shownSender = (match.displaySender != null && !match.displaySender.isBlank())
                 ? match.displaySender : match.sender;
-            // L'oiseau portait une lettre — la faire tomber sur place
             if (mob.level() instanceof ServerLevel sl) {
                 ItemStack letter = makeLetterItem(shownSender, match.subject, match.body);
                 Vec3 p = mob.position();
@@ -878,24 +651,10 @@ Details:
                 sl.sendParticles(ParticleTypes.POOF, p.x, p.y + 0.5, p.z, 14, 0.4, 0.3, 0.4, 0.03);
                 sl.sendParticles(ParticleTypes.ASH,  p.x, p.y + 0.5, p.z, 18, 0.5, 0.4, 0.5, 0.04);
             }
-            // Message au tueur s'il est un joueur (autre que le destinataire)
-            if (event.getSource().getEntity() instanceof ServerPlayer killer
-                    && !killer.getUUID().equals(match.player.getUUID())) {
-                killer.sendSystemMessage(Component.literal(
-                    "§e§oTu as intercepté une lettre de §f" + shownSender
-                    + " §eà §f" + match.player.getGameProfile().getName() + "§e."));
-                match.player.sendSystemMessage(Component.literal(
-                    "§c§o§f" + killer.getGameProfile().getName()
-                    + "§c a abattu le corbeau qui te portait une lettre de §f" + shownSender + "§c."));
-            } else {
-                match.player.sendSystemMessage(Component.literal(
-                    "§c§oUn corbeau s'est écroulé en plein vol — une lettre de §f" + shownSender + "§c ne t'arrivera jamais."));
-            }
         } else if (match.kind == Kind.SUMMON && match.phase == Phase.OUTGOING && match.outSubject != null) {
-            // Corbeau porteur abattu en vol — lettre tombe, livraison annulée
+            String shownSender = (match.displaySender != null && !match.displaySender.isBlank())
+                ? match.displaySender : match.player.getGameProfile().getName();
             if (mob.level() instanceof ServerLevel sl) {
-                String shownSender = (match.displaySender != null && !match.displaySender.isBlank())
-                    ? match.displaySender : match.player.getGameProfile().getName();
                 ItemStack letter = makeLetterItem(shownSender, match.outSubject, match.outBody);
                 Vec3 p = mob.position();
                 ItemEntity drop = new ItemEntity(sl, p.x, p.y + 0.4, p.z, letter);
@@ -905,14 +664,6 @@ Details:
                 sl.sendParticles(ParticleTypes.ASH,  p.x, p.y + 0.5, p.z, 18, 0.5, 0.4, 0.5, 0.04);
             }
             cancelDeliveries(match.deliveryIds);
-            match.player.sendSystemMessage(Component.literal(
-                "§c§oTon corbeau a été abattu en plein vol — ta lettre est tombée quelque part."));
-            if (event.getSource().getEntity() instanceof ServerPlayer killer
-                    && !killer.getUUID().equals(match.player.getUUID())) {
-                killer.sendSystemMessage(Component.literal(
-                    "§e§oTu as abattu le messager de §f" + match.player.getGameProfile().getName()
-                    + "§e — une lettre est tombée quelque part."));
-            }
         }
     }
 

@@ -22,20 +22,22 @@ import java.util.function.Consumer;
 @OnlyIn(Dist.CLIENT)
 public class WebBridge {
 
-    private final Consumer<String> onClose;
-    private MCEFBrowser browser;
+    private Consumer<String> onClose;
     private boolean closeFired = false;
+    /** Handler enregistré dans MCEF. L'API de cette version n'expose pas {@code removeDisplayHandler},
+     *  donc on neutralise le handler via {@link Listener#detached} pour casser la ref vers ce {@code WebBridge}
+     *  et permettre son GC. Le handler reste alloué mais devient un no-op. */
+    private final Listener listener = new Listener();
 
-    private final org.cef.handler.CefDisplayHandler displayHandler = new CefDisplayHandlerAdapter() {
+    private final class Listener extends CefDisplayHandlerAdapter {
+        volatile boolean detached = false;
         @Override
         public boolean onConsoleMessage(CefBrowser b, CefSettings.LogSeverity level, String msg, String src, int line) {
-            if (msg != null && msg.startsWith("PMOD::")) {
-                handleMessage(msg.substring(6));
-                return true;
-            }
-            return false;
+            if (detached || msg == null || !msg.startsWith("PMOD::")) return false;
+            handleMessage(msg.substring(6));
+            return true;
         }
-    };
+    }
 
     public WebBridge(Consumer<String> onClose) {
         this.onClose = onClose;
@@ -47,12 +49,14 @@ public class WebBridge {
      * @param b le browser MCEF nouvellement créé
      */
     public void attach(MCEFBrowser b) {
-        this.browser = b;
-        com.cinemamod.mcef.MCEF.getClient().addDisplayHandler(displayHandler);
+        com.cinemamod.mcef.MCEF.getClient().addDisplayHandler(listener);
     }
 
-    /** Détache le bridge sans fermer le browser. */
-    public void detach() { this.browser = null; }
+    /** Détache le bridge : neutralise le handler (no-op) et libère le callback de fermeture. */
+    public void detach() {
+        listener.detached = true;
+        this.onClose = null;
+    }
 
     /**
      * Déclenche le callback de fermeture une seule fois (idempotent).

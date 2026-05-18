@@ -12,7 +12,6 @@ import java.util.function.Supplier;
  *
  * @param recipients liste de destinataires pré-remplie, séparée par des virgules (peut être vide)
  */
-@SuppressWarnings("null")
 public class PacketOpenCompose {
 
     private final String recipients;

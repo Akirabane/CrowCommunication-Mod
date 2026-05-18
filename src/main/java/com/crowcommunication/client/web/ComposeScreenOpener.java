@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
  * <p>Si MCEF n'est pas disponible, annule la session et renvoie un {@link PacketCancelLetter}
  * pour que le corbeau reparte immédiatement côté serveur.</p>
  */
-@SuppressWarnings("null")
 @OnlyIn(Dist.CLIENT)
 public final class ComposeScreenOpener {
 

@@ -17,7 +17,6 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
  */
 public class CorbeauChoiceCommand {
 
-    @SuppressWarnings("null")
     @SubscribeEvent
     public static void onRegister(RegisterCommandsEvent event) {
         event.getDispatcher().register(

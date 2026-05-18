@@ -17,7 +17,6 @@ import java.util.function.Supplier;
  * <p>Le champ {@code target} est ignoré quand le serveur détecte un groupe en attente
  * via {@link com.crowcommunication.corbeau.CorbeauManager#takePendingGroup}.</p>
  */
-@SuppressWarnings("null")
 public class PacketSendMessage {
 
     private final String target;

@@ -26,7 +26,6 @@ import java.util.concurrent.CompletableFuture;
  * {@code /corbeau-groupe <pseudo1> <pseudo2> ...} envoie à plusieurs joueurs (max 8),
  * chacun recevant un corbeau individuel.</p>
  */
-@SuppressWarnings("null")
 public class CorbeauCommand {
 
     @SubscribeEvent
