@@ -22,6 +22,8 @@ import net.minecraft.world.item.ItemStack;
  * <p>Extraction depuis {@link CorbeauManager} (v1.0.9). Contient :
  * {@code PENDING} (livraisons en vol virtuel), {@code QUEUE} (messages prêts par joueur),
  * {@code LOST_PIGEONS} (lettres égarées à déposer au sol).</p>
+ *
+ * @author Akirabane
  */
 final class DeliveryScheduler {
 

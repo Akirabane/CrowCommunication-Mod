@@ -61,13 +61,18 @@ public class WebMenuScreen extends Screen {
 
     @Override
     public void onClose() {
+        bridge.fireClose("escape");
+        super.onClose(); // → setScreen(null) → removed() → browser.close(), puis grabMouse()
+    }
+
+    @Override
+    public void removed() {
         if (browser != null) {
-            bridge.fireClose("escape");
             bridge.detach();
             browser.close();
             browser = null;
         }
-        super.onClose();
+        super.removed();
     }
 
     @Override
@@ -127,7 +132,7 @@ public class WebMenuScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
         if (browser != null) {
-            // sendMouseMove doit précéder sendMousePress : CEF requiert la position à jour
+            try { browser.setFocus(true); } catch (Throwable ignored) {}
             browser.sendMouseMove(px(mx), py(my));
             browser.sendMousePress(px(mx), py(my), btn);
         }

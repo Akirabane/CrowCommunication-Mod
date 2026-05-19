@@ -14,6 +14,8 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
  *
  * <p>Invoquée exclusivement via les boutons cliquables du chat lors de la réception
  * d'une lettre. Non destinée à être tapée manuellement par un joueur.</p>
+ *
+ * @author Akirabane
  */
 public class CorbeauChoiceCommand {
 

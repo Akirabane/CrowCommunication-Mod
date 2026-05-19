@@ -18,6 +18,8 @@ import java.util.function.Consumer;
  *   <li>{@code PMOD::action|arg1|arg2} — actions génériques (ready, close)</li>
  *   <li>{@code PMOD::sendMsg::target::subject::body} — envoi effectif (les {@code ::} préservent les {@code |} dans le corps)</li>
  * </ul>
+ *
+ * @author Akirabane
  */
 @OnlyIn(Dist.CLIENT)
 public class WebBridge {
@@ -69,7 +71,18 @@ public class WebBridge {
         if (onClose != null) onClose.accept(reason);
     }
 
-    private void handleMessage(String payload) {
+    private void handleMessage(String rawPayload) {
+        // Strip trailing numeric nonce "|N" added by JS to prevent CEF console-message deduplication
+        int lastPipe = rawPayload.lastIndexOf('|');
+        final String payload;
+        if (lastPipe >= 0) {
+            String tail = rawPayload.substring(lastPipe + 1);
+            payload = (!tail.isEmpty() && tail.chars().allMatch(Character::isDigit))
+                ? rawPayload.substring(0, lastPipe)
+                : rawPayload;
+        } else {
+            payload = rawPayload;
+        }
         Minecraft.getInstance().execute(() -> {
             if (payload.startsWith("sendMsg::")) {
                 String rest = payload.substring("sendMsg::".length());

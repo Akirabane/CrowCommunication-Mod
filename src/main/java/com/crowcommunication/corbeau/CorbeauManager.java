@@ -63,6 +63,12 @@ import net.minecraftforge.registries.ForgeRegistries;
  * <h2>Interception</h2>
  * <p>Un corbeau {@code DELIVERY} est vulnérable : abattu à l'arc, la lettre tombe au sol.</p>
  */
+/**
+ * Gère l'intégralité du cycle de vie des corbeaux messagers : spawn, vol, livraison,
+ * détection d'abri, file d'attente HOVERING et retour à l'expéditeur.
+ *
+ * @author Akirabane
+ */
 public class CorbeauManager {
 
     // ============================ Types ============================

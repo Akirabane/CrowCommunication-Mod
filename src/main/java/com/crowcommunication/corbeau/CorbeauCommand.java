@@ -25,6 +25,8 @@ import java.util.concurrent.CompletableFuture;
  * <p>{@code /corbeau <pseudo>} envoie une lettre à un joueur.
  * {@code /corbeau-groupe <pseudo1> <pseudo2> ...} envoie à plusieurs joueurs (max 8),
  * chacun recevant un corbeau individuel.</p>
+ *
+ * @author Akirabane
  */
 public class CorbeauCommand {
 

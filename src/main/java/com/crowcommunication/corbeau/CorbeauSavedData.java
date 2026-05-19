@@ -17,6 +17,8 @@ import net.minecraft.world.level.saveddata.SavedData;
  * <p>Stocké sur la dimension overworld via le {@code DataStorage} vanilla. Les ticks de
  * {@link CorbeauManager.PendingDelivery#deliverAtTick} sont convertis en epoch millis au moment
  * de la sauvegarde (et reconvertis au load) pour survivre aux restarts serveur.</p>
+ *
+ * @author Akirabane
  */
 public class CorbeauSavedData extends SavedData {
 

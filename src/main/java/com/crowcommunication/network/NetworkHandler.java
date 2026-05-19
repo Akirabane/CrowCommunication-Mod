@@ -15,6 +15,8 @@ import java.util.Optional;
  *
  * <p>Centralise l'enregistrement de tous les packets et expose des helpers
  * d'envoi directionnels (serveur → client et client → serveur).</p>
+ *
+ * @author Akirabane
  */
 public class NetworkHandler {
 

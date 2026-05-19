@@ -67,6 +67,11 @@ public final class MCEFBootstrap {
      * Silencieux si appelé hors partie.
      */
     public static void notifyServerIfConnected() {
+        // Guard : n'envoyer le signal que si MCEF est effectivement prêt.
+        // Sans ça, ClientLoginHook notifiait le serveur dès la connexion,
+        // avant que scheduleForInit ait terminé — le serveur croyait le client prêt
+        // et l'oiseau descendait, mais ComposeScreenOpener trouvait ready==false.
+        if (!ready) return;
         try {
             net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
             if (mc.getConnection() != null) {

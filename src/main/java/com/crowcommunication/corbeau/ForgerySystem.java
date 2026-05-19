@@ -22,6 +22,8 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>Extraction conservative depuis {@link CorbeauManager} (v1.0.8). CorbeauManager garde
  * des méthodes statiques de façade qui délèguent ici pour préserver la compatibilité.</p>
+ *
+ * @author Akirabane
  */
 public final class ForgerySystem {
 

@@ -18,6 +18,8 @@ import net.minecraft.world.item.Items;
  *
  * <p>Extraction conservative depuis {@link CorbeauManager} (v1.0.8). Logique 100 %
  * fonctionnelle et sans état — pas de race condition à gérer.</p>
+ *
+ * @author Akirabane
  */
 public final class LetterRenderer {
 

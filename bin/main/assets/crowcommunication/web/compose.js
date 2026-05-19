@@ -1,5 +1,6 @@
+let _seq = 0;
 window.pmod = {
-  send(action, ...args) { console.log("PMOD::" + [action, ...args].join("|")); },
+  send(action, ...args) { console.log("PMOD::" + [action, ...args, ++_seq].join("|")); },
   sendMessage(target, subject, body, forgeName) {
     // Quatre champs séparés par :: — préserve les | dans le corps
     console.log("PMOD::sendMsg::" + target + "::" + subject + "::" + body + "::" + (forgeName || ""));

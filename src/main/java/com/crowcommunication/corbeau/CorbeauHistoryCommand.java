@@ -15,6 +15,8 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 /**
  * Enregistre la commande {@code /corbeau-historique} qui affiche les 10 dernières
  * lettres envoyées ou reçues par le joueur (entrée la plus récente en haut).
+ *
+ * @author Akirabane
  */
 public class CorbeauHistoryCommand {
 

@@ -25,6 +25,14 @@ public class LetterViewHandler {
     @SubscribeEvent
     public static void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
         if (event.getHand() != InteractionHand.MAIN_HAND) return;
+
+        // Guard : n'exécuter que pour les events côté client. Sans ça, sur un serveur intégré,
+        // l'event se déclenche aussi côté serveur (même JVM) : pour le joueur distant → ouvre
+        // l'écran sur la machine du host ; pour le joueur local → double-fire qui ferme
+        // immédiatement l'écran via bridge.fireClose("escape") du premier screen.
+        if (!event.getEntity().level().isClientSide()) return;
+        Minecraft mc = Minecraft.getInstance();
+
         ItemStack stack = event.getItemStack();
         if (!stack.is(Items.PAPER)) return;
         CompoundTag tag = stack.getTag();
@@ -36,7 +44,6 @@ public class LetterViewHandler {
         String subject = tag.getString("crow_subject");
         String body    = tag.getString("crow_body");
 
-        Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> LetterViewOpener.open(sender, subject, body));
     }
 }
