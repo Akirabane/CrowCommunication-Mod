@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -121,8 +120,6 @@ public class CorbeauManager {
             this.deliverAtTick = t; this.isReturn = ret;
         }
     }
-    private static final List<PendingDelivery> PENDING = new ArrayList<>();
-
     /** Message arrivé en attente d'être physiquement livré (queue par joueur). */
     public static final class QueuedMessage {
         public final UUID id;
@@ -134,7 +131,6 @@ public class CorbeauManager {
             this.subject = su; this.body = b; this.isReturn = ret;
         }
     }
-    private static final Map<UUID, Deque<QueuedMessage>> QUEUE = new ConcurrentHashMap<>();
 
     /**
      * Un pigeon perdu : lettre qu'un corbeau n'a jamais pu atteindre (destinataire trop loin).
@@ -156,11 +152,10 @@ public class CorbeauManager {
             this.dropAtMillis = dropAt;
         }
     }
-    private static final List<LostPigeon> LOST_PIGEONS = new ArrayList<>();
-    /** Marque la persistance comme à-sauver à la prochaine sauvegarde du monde. */
-    private static java.util.function.Consumer<Void> persistDirty = v -> {};
+
+    /** Façade vers {@link DeliveryScheduler#setPersistenceDirtyMarker}. */
     public static void setPersistenceDirtyMarker(java.util.function.Consumer<Void> marker) {
-        persistDirty = marker == null ? (v -> {}) : marker;
+        DeliveryScheduler.setPersistenceDirtyMarker(marker);
     }
 
     // ============================ Économie & règles ============================
@@ -413,70 +408,38 @@ public class CorbeauManager {
      * @param body       corps de la lettre
      * @param delayTicks délai en ticks avant l'entrée en queue
      */
+    /** Façade vers {@link DeliveryScheduler#scheduleDelivery}. */
     public static UUID scheduleDelivery(MinecraftServer server, ServerPlayer recipient,
                                         String senderName, String displaySender,
                                         String subject, String body, long delayTicks) {
-        return scheduleDeliveryInternal(server, recipient.getUUID(), senderName, displaySender,
-            subject, body, delayTicks, false);
+        return DeliveryScheduler.scheduleDelivery(server, recipient, senderName, displaySender,
+            subject, body, delayTicks);
     }
 
-    private static UUID scheduleDeliveryInternal(MinecraftServer server, UUID recipientUUID,
-                                                 String senderName, String displaySender,
-                                                 String subject, String body,
-                                                 long delayTicks, boolean isReturn) {
-        long deliverAt = server.getTickCount() + delayTicks;
-        UUID msgId = UUID.randomUUID();
-        synchronized (PENDING) {
-            PENDING.add(new PendingDelivery(recipientUUID, msgId, senderName, displaySender,
-                subject, body, deliverAt, isReturn));
-        }
-        persistDirty.accept(null);
-        return msgId;
-    }
-
-    /**
-     * Programme un "pigeon perdu" : la lettre apparaîtra au sol dans un endroit aléatoire
-     * autour de l'expéditeur après un délai variable (5–20 min). Le sender ne reçoit aucune
-     * confirmation que la lettre a été perdue — c'est volontairement opaque pour le RP.
-     *
-     * @return le délai estimé en secondes, pour information uniquement (non communiqué au joueur)
-     */
+    /** Façade vers {@link DeliveryScheduler#scheduleLostPigeon}. */
     public static long scheduleLostPigeon(ServerPlayer sender, String displaySender,
                                           String subject, String body) {
-        var rng = sender.getRandom();
-        // Position : entre 800 et 1400 blocs du sender, dans une direction aléatoire
-        double angle = rng.nextDouble() * Math.PI * 2.0;
-        double dist = 800 + rng.nextDouble() * 600;
-        double x = sender.getX() + Math.cos(angle) * dist;
-        double z = sender.getZ() + Math.sin(angle) * dist;
-        double y = sender.getY(); // Y du sender, faute de mieux — sera ajusté au spawn
-        long delayMs = (5L + rng.nextInt(16)) * 60L * 1000L; // 5 à 20 min
-        long dropAt = System.currentTimeMillis() + delayMs;
-        String dim = sender.level().dimension().location().toString();
-        synchronized (LOST_PIGEONS) {
-            LOST_PIGEONS.add(new LostPigeon(sender.getGameProfile().getName(), displaySender,
-                subject, body, dim, x, y, z, dropAt));
-        }
-        persistDirty.accept(null);
-        return delayMs / 1000L;
+        return DeliveryScheduler.scheduleLostPigeon(sender, displaySender, subject, body);
     }
 
-    /** Accès lecture-seule aux pigeons perdus pour la couche de persistance. */
+    /** Façade vers {@link DeliveryScheduler#snapshotLostPigeons}. */
     public static List<LostPigeon> snapshotLostPigeons() {
-        synchronized (LOST_PIGEONS) { return new ArrayList<>(LOST_PIGEONS); }
+        return DeliveryScheduler.snapshotLostPigeons();
     }
+    /** Façade vers {@link DeliveryScheduler#snapshotPending}. */
     public static List<PendingDelivery> snapshotPending() {
-        synchronized (PENDING) { return new ArrayList<>(PENDING); }
+        return DeliveryScheduler.snapshotPending();
     }
+    /** Façade vers {@link DeliveryScheduler#restorePersistedState}. */
     public static void restorePersistedState(List<PendingDelivery> pending, List<LostPigeon> lost) {
-        synchronized (PENDING) { PENDING.clear(); PENDING.addAll(pending); }
-        synchronized (LOST_PIGEONS) { LOST_PIGEONS.clear(); LOST_PIGEONS.addAll(lost); }
+        DeliveryScheduler.restorePersistedState(pending, lost);
     }
-    /** Rebuilds an internal PendingDelivery from persisted fields (used by SavedData on load). */
+    /** Façade vers {@link DeliveryScheduler#createPendingForRestore}. */
     public static PendingDelivery createPendingForRestore(UUID recipientUUID, UUID msgId, String sender,
                                                           String displaySender, String subject, String body,
                                                           long deliverAtTick, boolean isReturn) {
-        return new PendingDelivery(recipientUUID, msgId, sender, displaySender, subject, body, deliverAtTick, isReturn);
+        return DeliveryScheduler.createPendingForRestore(recipientUUID, msgId, sender, displaySender,
+            subject, body, deliverAtTick, isReturn);
     }
 
     /**
@@ -506,18 +469,6 @@ public class CorbeauManager {
                 b.outgoingDurationTicks = delays.get(idx);
                 b.displaySender = displaySender;
             }
-        }
-    }
-
-    private static void cancelDeliveries(List<UUID> ids) {
-        if (ids == null || ids.isEmpty()) return;
-        synchronized (PENDING) {
-            PENDING.removeIf(d -> ids.contains(d.msgId));
-        }
-        // Si le timing a déjà fait passer le message PENDING → QUEUE, le retirer aussi
-        // pour qu'aucun corbeau de livraison ne spawne malgré l'annulation.
-        for (Deque<QueuedMessage> q : QUEUE.values()) {
-            q.removeIf(m -> ids.contains(m.id));
         }
     }
 
@@ -716,7 +667,7 @@ public class CorbeauManager {
                 sl.sendParticles(ParticleTypes.POOF, p.x, p.y + 0.5, p.z, 14, 0.4, 0.3, 0.4, 0.03);
                 sl.sendParticles(ParticleTypes.ASH,  p.x, p.y + 0.5, p.z, 18, 0.5, 0.4, 0.5, 0.04);
             }
-            cancelDeliveries(match.deliveryIds);
+            DeliveryScheduler.cancelDeliveries(match.deliveryIds);
         }
     }
 
@@ -727,27 +678,14 @@ public class CorbeauManager {
         if (server == null) return;
 
         // 1) Livraisons temporelles → entrent dans la queue du joueur
-        long now = server.getTickCount();
-        List<PendingDelivery> done = new ArrayList<>();
-        synchronized (PENDING) {
-            for (PendingDelivery d : PENDING) {
-                if (now >= d.deliverAtTick) {
-                    QUEUE.computeIfAbsent(d.recipientUUID, k -> new ArrayDeque<>())
-                         .addLast(new QueuedMessage(d.msgId, d.sender, d.displaySender, d.subject, d.body, d.isReturn));
-                    done.add(d);
-                }
-            }
-            PENDING.removeAll(done);
-        }
+        DeliveryScheduler.tickPending(server);
 
         // 2) Dispatcher : pour chaque joueur en ligne avec une queue, si pas de delivery active, spawn
-        for (Map.Entry<UUID, Deque<QueuedMessage>> e : QUEUE.entrySet()) {
-            Deque<QueuedMessage> q = e.getValue();
-            if (q == null || q.isEmpty()) continue;
-            ServerPlayer p = server.getPlayerList().getPlayer(e.getKey());
+        for (UUID uid : DeliveryScheduler.queuedPlayerUUIDs()) {
+            ServerPlayer p = server.getPlayerList().getPlayer(uid);
             if (p == null || p.isRemoved()) continue;
             if (hasActiveDeliveryFor(p)) continue;
-            QueuedMessage msg = q.pollFirst();
+            QueuedMessage msg = DeliveryScheduler.pollFirst(uid);
             if (msg == null) continue;
             spawnDeliveryBird(p, msg);
         }
@@ -767,46 +705,13 @@ public class CorbeauManager {
         }
 
         // 4) Pigeons perdus : à l'instant programmé, la lettre tombe dans le monde
-        long nowMs = System.currentTimeMillis();
-        List<LostPigeon> hatched = new ArrayList<>();
-        synchronized (LOST_PIGEONS) {
-            for (LostPigeon lp : LOST_PIGEONS) {
-                if (nowMs >= lp.dropAtMillis) hatched.add(lp);
-            }
-            LOST_PIGEONS.removeAll(hatched);
-        }
-        for (LostPigeon lp : hatched) dropLostPigeonInWorld(server, lp);
-        if (!hatched.isEmpty()) persistDirty.accept(null);
-    }
-
-    /** Fait apparaître l'item lettre d'un pigeon perdu à sa position planifiée. */
-    private static void dropLostPigeonInWorld(MinecraftServer server, LostPigeon lp) {
-        ServerLevel sl = null;
-        for (ServerLevel candidate : server.getAllLevels()) {
-            if (candidate.dimension().location().toString().equals(lp.dimensionKey)) { sl = candidate; break; }
-        }
-        if (sl == null) return; // dimension supprimée entre-temps, on abandonne silencieusement
-        // Trouver une hauteur de sol valide à (x, z) — le Y stocké est juste un fallback
-        int bx = (int) Math.floor(lp.x);
-        int bz = (int) Math.floor(lp.z);
-        int by = sl.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, bx, bz);
-        double spawnY = by > 0 ? by + 0.5 : lp.y;
-        ItemStack letter = makeLetterItem(lp.displaySender, lp.subject, lp.body);
-        ItemEntity drop = new ItemEntity(sl, lp.x, spawnY, lp.z, letter);
-        drop.setDeltaMovement(0, 0.05, 0);
-        drop.setPickUpDelay(0);
-        // L'item ne disparaît jamais — il attend qu'un joueur le trouve
-        drop.setUnlimitedLifetime();
-        sl.addFreshEntity(drop);
-        // Particules discrètes pour signaler l'apparition (peu visible à distance, c'est voulu)
-        sl.sendParticles(ParticleTypes.POOF, lp.x, spawnY + 0.4, lp.z, 8, 0.3, 0.2, 0.3, 0.01);
+        DeliveryScheduler.tickLostPigeons(server);
     }
 
     private static void spawnDeliveryBird(ServerPlayer player, QueuedMessage msg) {
         Bird b = spawnBird(player, Kind.DELIVERY);
         if (b == null) {
-            // si on n'a pas pu spawn, on remet le message dans la queue
-            QUEUE.computeIfAbsent(player.getUUID(), k -> new ArrayDeque<>()).addFirst(msg);
+            DeliveryScheduler.requeueFirst(player.getUUID(), msg);
             return;
         }
         b.msgId = msg.id;
@@ -920,9 +825,7 @@ public class CorbeauManager {
 
         // Le bird arrivé prend en charge la livraison — on annule l'éventuel PENDING/QUEUE doublon.
         if (b.deliveryIds != null && !b.deliveryIds.isEmpty()) {
-            cancelDeliveries(b.deliveryIds);
-            Deque<QueuedMessage> q = QUEUE.get(recipient.getUUID());
-            if (q != null) q.removeIf(m -> b.deliveryIds.contains(m.id));
+            DeliveryScheduler.cancelDeliveries(b.deliveryIds);
         }
 
         b.kind = Kind.DELIVERY;
