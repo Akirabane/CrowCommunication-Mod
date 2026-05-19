@@ -619,6 +619,23 @@ public class CorbeauManager {
         return b;
     }
 
+    /**
+     * @return {@code true} si ce {@code msgId} est déjà matérialisé en jeu (SUMMON OUTGOING porteur,
+     *         DELIVERY déjà spawné, ou en HOVERING). Empêche le dispatcher de doubler une livraison
+     *         déjà en vol via le path A (porté par l'oiseau de l'expéditeur).
+     */
+    private static boolean isMessageAlreadyInFlight(UUID msgId) {
+        if (msgId == null) return false;
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.kind == Kind.SUMMON && b.phase == Phase.OUTGOING
+                        && b.deliveryIds != null && b.deliveryIds.contains(msgId)) return true;
+                if (b.kind == Kind.DELIVERY && msgId.equals(b.msgId)) return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean hasActiveDeliveryFor(ServerPlayer p) {
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
@@ -704,6 +721,8 @@ public class CorbeauManager {
             if (p == null || p.isRemoved()) continue;
             QueuedMessage msg = DeliveryScheduler.pollFirst(uid);
             if (msg == null) continue;
+            // Path A (SUMMON OUTGOING porteur de la lettre) déjà en vol → ne pas dupliquer
+            if (isMessageAlreadyInFlight(msg.id)) continue;
             spawnDeliveryBird(p, msg);
         }
 
