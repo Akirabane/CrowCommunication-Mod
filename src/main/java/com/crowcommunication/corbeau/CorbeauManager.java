@@ -571,6 +571,25 @@ public class CorbeauManager {
             1.2f, 0.8f + bird.level().random.nextFloat() * 0.4f);
     }
 
+    /**
+     * Joue une note du chant : son ambient du robin + particule note de musique colorée
+     * au-dessus de la tête. À enchaîner par phrases de 3 notes pour un effet "cuicui rythmé".
+     */
+    private static void birdSong(Mob bird) {
+        if (!(bird.level() instanceof ServerLevel sl)) return;
+        net.minecraft.sounds.SoundEvent snd = ForgeRegistries.SOUND_EVENTS.getValue(SND_BIRD_CHIRP);
+        if (snd != null) {
+            sl.playSound(null, bird.blockPosition(), snd, SoundSource.NEUTRAL,
+                0.9f, 0.9f + sl.random.nextFloat() * 0.4f);
+        }
+        // ParticleTypes.NOTE utilise le xSpeed comme teinte (hue 0..1)
+        double hue = sl.random.nextDouble();
+        Vec3 above = bird.position().add(0, bird.getBbHeight() + 0.35, 0);
+        sl.sendParticles(ParticleTypes.NOTE,
+            above.x, above.y, above.z,
+            0, hue, 0.0, 0.0, 1.0);
+    }
+
     private static void playFly(Mob bird) {
         net.minecraft.sounds.SoundEvent snd = ForgeRegistries.SOUND_EVENTS.getValue(SND_BIRD_FLY);
         if (snd != null) {
@@ -855,7 +874,11 @@ public class CorbeauManager {
             case WAITING_OUTSIDE -> tickWaitingOutside(b);
             case OUTGOING -> {
                 if (b.ticks % 6 == 0)  playFly(b.chicken);
-                if (b.ticks % 80 == 40) playChirp(b.chicken);
+                // Phrase de chant à 3 notes toutes les ~6 secondes : cuicui-cuicui-cuicui
+                int songPhase = b.ticks % 120;
+                if (songPhase == 0 || songPhase == 6 || songPhase == 14) {
+                    birdSong(b.chicken);
+                }
                 spawnFeatherTrail(b.chicken);
 
                 boolean carryingLetter = b.outSubject != null
