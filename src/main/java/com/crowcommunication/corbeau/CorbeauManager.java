@@ -867,11 +867,18 @@ public class CorbeauManager {
                         ? null : server.getPlayerList().getPlayerByName(b.recipientName);
                     Vec3 from = b.outgoingFrom != null ? b.outgoingFrom : b.chicken.position();
                     double targetX, targetZ, targetY;
+                    // Si le destinataire est abrité (cave/eau/maison fermée), on ne descend PAS :
+                    // la cible Y reste haute (croisière) → le corbeau arrive au-dessus, déclenche
+                    // le U-turn dans arriveCarrying sans avoir plongé.
+                    boolean shelteredTarget = recipient != null && !b.isReturn
+                                              && isRecipientSheltered(recipient);
                     if (recipient != null && !recipient.isRemoved()
                             && recipient.level().dimension().equals(b.chicken.level().dimension())) {
                         targetX = recipient.getX();
                         targetZ = recipient.getZ();
-                        targetY = recipient.getY() + 1.6;
+                        targetY = shelteredTarget
+                            ? Math.max(from.y, recipient.getY() + 25.0)
+                            : recipient.getY() + 1.6;
                     } else {
                         targetX = b.flyTo.x;
                         targetZ = b.flyTo.z;
