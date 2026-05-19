@@ -29,7 +29,9 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
@@ -323,8 +325,7 @@ public class CorbeauManager {
             consumePaper(player, needed);
         }
 
-        BlockPos eyeBlock = BlockPos.containing(player.getEyePosition()).above();
-        if (!player.level().canSeeSky(eyeBlock)) {
+        if (isRecipientSheltered(player)) {
             player.sendSystemMessage(Component.literal(
                 "§c§oLe corbeau ne peut pas atteindre le ciel depuis ici."));
             return;
@@ -564,7 +565,7 @@ public class CorbeauManager {
         net.minecraft.sounds.SoundEvent snd = ForgeRegistries.SOUND_EVENTS.getValue(SND_BIRD_CHIRP);
         if (snd == null) return;
         bird.level().playSound(null, bird.blockPosition(), snd, SoundSource.NEUTRAL,
-            0.5f, 0.8f + bird.level().random.nextFloat() * 0.4f);
+            1.2f, 0.8f + bird.level().random.nextFloat() * 0.4f);
     }
 
     private static void playFly(Mob bird) {
@@ -932,9 +933,34 @@ public class CorbeauManager {
      */
     private static boolean isRecipientSheltered(ServerPlayer p) {
         if (p == null || p.isRemoved()) return false;
-        if (p.isUnderWater() || p.isInWater()) return true;
-        BlockPos head = BlockPos.containing(p.getEyePosition()).above();
-        return !p.level().canSeeSky(head);
+        if (p.isUnderWater() || p.isEyeInFluid(net.minecraft.tags.FluidTags.WATER)) return true;
+        Level level = p.level();
+        BlockPos head = BlockPos.containing(p.getEyePosition());
+        // Raccourci O(1) : heightmap première couche bloquante (hors feuilles).
+        // Si très proche → exposé direct (sous arbre, surplomb léger, ciel libre).
+        int surfaceY = level.getHeight(
+            net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+            head.getX(), head.getZ());
+        if (surfaceY - head.getY() <= 2) return false;
+        // Sinon, scan court borné par surfaceY. On ignore tout ce qui constitue
+        // une canopée d'arbre OU une maison habitable RP : feuilles, bûches, neige
+        // sur feuilles, planches, escaliers/dalles/portes/trappes/clôtures en bois.
+        // → Un corbeau passe par une fenêtre, une cheminée, ou se pose sur le toit.
+        int maxY = Math.min(surfaceY + 1, level.getMaxBuildHeight());
+        for (int y = head.getY() + 1; y < maxY; y++) {
+            BlockState state = level.getBlockState(new BlockPos(head.getX(), y, head.getZ()));
+            if (state.isAir()) continue;
+            if (state.is(BlockTags.LEAVES) || state.is(BlockTags.LOGS)) continue;
+            if (state.is(net.minecraft.world.level.block.Blocks.SNOW)) continue;
+            if (state.is(BlockTags.PLANKS)) continue;
+            if (state.is(BlockTags.WOODEN_STAIRS)) continue;
+            if (state.is(BlockTags.WOODEN_SLABS)) continue;
+            if (state.is(BlockTags.WOODEN_DOORS)) continue;
+            if (state.is(BlockTags.WOODEN_TRAPDOORS)) continue;
+            if (state.is(BlockTags.WOODEN_FENCES)) continue;
+            return true; // bloc solide non-arbre, non-maison → vraie grotte/abri minéral
+        }
+        return false; // que de la canopée ou du bois habitable → le corbeau passe
     }
 
     /** @return {@code true} si un corbeau de livraison est déjà en interaction (WAITING) avec ce joueur. */
@@ -1245,10 +1271,13 @@ public class CorbeauManager {
             }
         }
 
-        // Destinataire sous l'eau ou dans une grotte → le corbeau ne peut pas livrer, demi-tour
-        // vers l'expéditeur initial (la lettre repart). Pas de boucle : un retour qui retrouve
-        // l'expéditeur lui-même sheltered finit par dropper sur place via handleRecipientGone.
+        // Destinataire sous l'eau ou dans une grotte → le corbeau ne descend pas, il fait demi-tour
+        // depuis l'altitude de croisière. Indice RP au destinataire (battement d'ailes au-dessus).
+        // Pas de boucle : un retour qui retrouve l'expéditeur lui-même sheltered finit par dropper
+        // sur place via handleRecipientGone.
         if (!wasReturn && isRecipientSheltered(recipient)) {
+            recipient.sendSystemMessage(Component.literal(
+                "§8§oUn battement d'ailes au-dessus de toi... mais aucun corbeau ne descend te trouver."));
             uTurnTowardSender(b, senderName, subject, body);
             return;
         }
@@ -1272,7 +1301,9 @@ public class CorbeauManager {
     }
 
     private static void tickIncoming(Bird b) {
-        Vec3 target = b.player.getEyePosition().add(b.player.getLookAngle().scale(2.2)).add(0, -0.1, 0);
+        // La décision sheltered/exposé est figée à l'arrivée (arriveCarrying) — pas de re-check ici.
+        // INCOMING signifie toujours « descente normale vers le joueur ».
+        final Vec3 target = b.player.getEyePosition().add(b.player.getLookAngle().scale(2.2)).add(0, -0.1, 0);
         // 40 blocs de distance pour les deux types → 300 ticks (15s) pour une vitesse cohérente
         int durationTicks = 300;
         double progress = Math.min(1.0, b.ticks / (double) durationTicks);
@@ -1289,12 +1320,6 @@ public class CorbeauManager {
         if (b.ticks % 80 == 20) playChirp(b.chicken);
 
         if (cur.distanceTo(target) < 1.2 || progress >= 1.0) {
-            // Destinataire sous l'eau / dans une grotte → demi-tour vers l'expéditeur initial
-            if (b.kind == Kind.DELIVERY && !b.isReturn && isRecipientSheltered(b.player)
-                    && b.sender != null && b.subject != null && b.body != null) {
-                uTurnTowardSender(b, b.sender, b.subject, b.body);
-                return;
-            }
             // Si une autre lettre est en cours d'interaction → file d'attente HOVERING
             if (b.kind == Kind.DELIVERY && hasWaitingBirdFor(b.player)) {
                 enterHovering(b, b.player);
@@ -1304,10 +1329,6 @@ public class CorbeauManager {
             b.ticks = 0;
             b.chicken.setDeltaMovement(Vec3.ZERO);
             onArrived(b);
-        }
-        if (b.ticks % 7 == 0) {
-            b.chicken.level().playSound(null, b.chicken.blockPosition(),
-                SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.55f, 0.55f);
         }
 
         // Interception ambiante : tout joueur tiers à <32 blocs entend & voit passer le corbeau
