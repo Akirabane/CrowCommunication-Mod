@@ -78,7 +78,10 @@ public class CorbeauManager {
      *   <li>{@code OUTGOING} : repart (livré, refusé, ou demi-tour retour vers l'expéditeur).</li>
      * </ul>
      */
-    private enum Phase { INCOMING, WAITING, OUTGOING, HOVERING }
+    private enum Phase { INCOMING, WAITING, OUTGOING, HOVERING, WAITING_OUTSIDE }
+
+    /** Trois niveaux d'abri du destinataire — décide du comportement du corbeau à l'arrivée. */
+    private enum ShelterState { EXPOSED, SURFACE_SHELTER, DEEP_SHELTER }
 
     private static final class Bird {
         Kind kind;
@@ -849,6 +852,7 @@ public class CorbeauManager {
             case INCOMING -> tickIncoming(b);
             case WAITING  -> tickWaiting(b);
             case HOVERING -> tickHovering(b);
+            case WAITING_OUTSIDE -> tickWaitingOutside(b);
             case OUTGOING -> {
                 if (b.ticks % 6 == 0)  playFly(b.chicken);
                 if (b.ticks % 80 == 40) playChirp(b.chicken);
@@ -939,21 +943,31 @@ public class CorbeauManager {
      * sous un toit (plus de vue du ciel au-dessus de sa tête), ou dans une grotte.
      */
     private static boolean isRecipientSheltered(ServerPlayer p) {
-        if (p == null || p.isRemoved()) return false;
-        if (p.isUnderWater() || p.isEyeInFluid(net.minecraft.tags.FluidTags.WATER)) return true;
+        return getShelterState(p) != ShelterState.EXPOSED;
+    }
+
+    /**
+     * Détermine l'état d'abri d'un joueur, à 3 niveaux :
+     * <ul>
+     *   <li>{@link ShelterState#EXPOSED} : ciel libre, sous canopée d'arbre, ou maison purement en bois (le corbeau passe)</li>
+     *   <li>{@link ShelterState#SURFACE_SHELTER} : abri solide au niveau de la surface (Y ≥ 59) → maison/tour/refuge ; le corbeau peut patienter à proximité</li>
+     *   <li>{@link ShelterState#DEEP_SHELTER} : sous l'eau, ou sous Y=59 dans un abri solide → cave/mine/basement ; le corbeau ne peut pas livrer</li>
+     * </ul>
+     */
+    private static ShelterState getShelterState(ServerPlayer p) {
+        if (p == null || p.isRemoved()) return ShelterState.EXPOSED;
+        if (p.isUnderWater() || p.isEyeInFluid(net.minecraft.tags.FluidTags.WATER)) return ShelterState.DEEP_SHELTER;
         Level level = p.level();
         BlockPos head = BlockPos.containing(p.getEyePosition());
         // Raccourci O(1) : heightmap première couche bloquante (hors feuilles).
-        // Si très proche → exposé direct (sous arbre, surplomb léger, ciel libre).
         int surfaceY = level.getHeight(
             net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
             head.getX(), head.getZ());
-        if (surfaceY - head.getY() <= 2) return false;
-        // Sinon, scan court borné par surfaceY. On ignore tout ce qui constitue
-        // une canopée d'arbre OU une maison habitable RP : feuilles, bûches, neige
-        // sur feuilles, planches, escaliers/dalles/portes/trappes/clôtures en bois.
-        // → Un corbeau passe par une fenêtre, une cheminée, ou se pose sur le toit.
+        if (surfaceY - head.getY() <= 2) return ShelterState.EXPOSED;
+        // Scan court borné par surfaceY. On ignore canopée et matériaux d'habitation
+        // (bois sous toutes formes) → un corbeau passe par les fenêtres/cheminées.
         int maxY = Math.min(surfaceY + 1, level.getMaxBuildHeight());
+        boolean foundSolid = false;
         for (int y = head.getY() + 1; y < maxY; y++) {
             BlockState state = level.getBlockState(new BlockPos(head.getX(), y, head.getZ()));
             if (state.isAir()) continue;
@@ -965,9 +979,12 @@ public class CorbeauManager {
             if (state.is(BlockTags.WOODEN_DOORS)) continue;
             if (state.is(BlockTags.WOODEN_TRAPDOORS)) continue;
             if (state.is(BlockTags.WOODEN_FENCES)) continue;
-            return true; // bloc solide non-arbre, non-maison → vraie grotte/abri minéral
+            foundSolid = true;
+            break;
         }
-        return false; // que de la canopée ou du bois habitable → le corbeau passe
+        if (!foundSolid) return ShelterState.EXPOSED;
+        // Joueur abrité par du solide non-bois. Y ≥ 59 → maison/refuge en surface ; sinon cave.
+        return head.getY() >= 59 ? ShelterState.SURFACE_SHELTER : ShelterState.DEEP_SHELTER;
     }
 
     /** @return {@code true} si un corbeau de livraison est déjà en interaction (WAITING) avec ce joueur. */
@@ -1139,7 +1156,8 @@ public class CorbeauManager {
      */
     private static boolean handleRecipientGone(Bird b) {
         if (b.kind != Kind.DELIVERY) return false;
-        if (b.phase != Phase.WAITING && b.phase != Phase.HOVERING && b.phase != Phase.INCOMING) return false;
+        if (b.phase != Phase.WAITING && b.phase != Phase.HOVERING
+                && b.phase != Phase.INCOMING && b.phase != Phase.WAITING_OUTSIDE) return false;
         // Chercher l'expéditeur original via le nom
         MinecraftServer server = null;
         if (b.chicken.level() instanceof ServerLevel sl) server = sl.getServer();
@@ -1212,6 +1230,89 @@ public class CorbeauManager {
         }
     }
 
+    // ============================ Attente extérieure (joueur en maison surface) ============================
+
+    /** Durée max d'attente du corbeau autour d'une maison surface, en ticks (60 s). */
+    private static final int WAITING_OUTSIDE_MAX_TICKS = 1200;
+
+    /** Place le bird en orbite d'attente autour d'un destinataire en abri de surface. */
+    private static void enterWaitingOutside(Bird b, ServerPlayer recipient) {
+        b.player = recipient;
+        b.phase = Phase.WAITING_OUTSIDE;
+        b.ticks = 0;
+        b.hoverSlot = 0;
+        b.chicken.setInvulnerable(false);
+        b.chicken.setDeltaMovement(Vec3.ZERO);
+    }
+
+    /**
+     * Tick d'attente : le corbeau orbite à hauteur de croisière au-dessus du destinataire.
+     * À chaque seconde, ré-évalue l'état d'abri :
+     *  • EXPOSED → descend pour livrer (transition vers INCOMING)
+     *  • DEEP_SHELTER → demi-tour immédiat (joueur s'est enfoncé en cave)
+     *  • SURFACE_SHELTER → continue à attendre
+     * Après {@value #WAITING_OUTSIDE_MAX_TICKS} ticks, le corbeau s'impatiente et rentre.
+     */
+    private static void tickWaitingOutside(Bird b) {
+        ServerPlayer p = b.player;
+        if (p == null || p.isRemoved()
+                || !p.level().dimension().equals(b.chicken.level().dimension())) {
+            return; // tick principal gère via handleRecipientGone
+        }
+        // Orbite autour du joueur, à hauteur de croisière
+        double cruiseY = Math.max(HOVER_ALTITUDE, p.getY() + HOVER_ABOVE_PLAYER);
+        double angle = b.ticks * 0.03;
+        double radius = HOVER_RADIUS;
+        double tx = p.getX() + Math.cos(angle) * radius;
+        double tz = p.getZ() + Math.sin(angle) * radius;
+        double ty = cruiseY + Math.sin(b.ticks * 0.08) * 0.6;
+        Vec3 cur = b.chicken.position();
+        Vec3 desired = new Vec3(tx, ty, tz);
+        Vec3 step = desired.subtract(cur);
+        if (step.length() > 1.6) step = step.normalize().scale(1.6);
+        Vec3 newPos = cur.add(step);
+        Vec3 yawStep = new Vec3(tx - cur.x, 0, tz - cur.z);
+        float yaw = yawStep.lengthSqr() > 0.01 ? computeYaw(yawStep) : b.chicken.getYRot();
+        b.chicken.moveTo(newPos.x, newPos.y, newPos.z, yaw, -8f);
+        if (b.ticks % 12 == 0) spawnFeatherTrail(b.chicken);
+        // Cri de présence un peu plus fréquent que HOVERING — le joueur doit l'entendre
+        if (b.ticks % 40 == 0) {
+            b.chicken.level().playSound(null, b.chicken.blockPosition(),
+                SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.35f, 0.65f);
+        }
+        if (b.ticks % 80 == 20) playChirp(b.chicken);
+
+        // Re-check de l'abri une fois par seconde
+        if (b.ticks > 0 && b.ticks % 20 == 0) {
+            ShelterState shelter = getShelterState(p);
+            if (shelter == ShelterState.EXPOSED) {
+                // Le joueur est sorti → descente pour livraison
+                if (hasWaitingBirdFor(p)) {
+                    enterHovering(b, p);
+                    return;
+                }
+                b.origin = b.chicken.position();
+                b.phase = Phase.INCOMING;
+                b.ticks = 0;
+                return;
+            }
+            if (shelter == ShelterState.DEEP_SHELTER) {
+                // Joueur a plongé en cave entre-temps → demi-tour
+                p.sendSystemMessage(Component.literal(
+                    "§8§oUn battement d'ailes au-dessus de toi... mais aucun corbeau ne descend te trouver."));
+                uTurnTowardSender(b, b.sender, b.subject, b.body);
+                return;
+            }
+        }
+
+        // Timeout : le corbeau s'impatiente
+        if (b.ticks >= WAITING_OUTSIDE_MAX_TICKS) {
+            p.sendSystemMessage(Component.literal(
+                "§8§oLe corbeau s'impatiente et repart au loin..."));
+            uTurnTowardSender(b, b.sender, b.subject, b.body);
+        }
+    }
+
     // ============================ Arrivée en place ============================
 
     /**
@@ -1278,15 +1379,26 @@ public class CorbeauManager {
             }
         }
 
-        // Destinataire sous l'eau ou dans une grotte → le corbeau ne descend pas, il fait demi-tour
-        // depuis l'altitude de croisière. Indice RP au destinataire (battement d'ailes au-dessus).
-        // Pas de boucle : un retour qui retrouve l'expéditeur lui-même sheltered finit par dropper
-        // sur place via handleRecipientGone.
-        if (!wasReturn && isRecipientSheltered(recipient)) {
-            recipient.sendSystemMessage(Component.literal(
-                "§8§oUn battement d'ailes au-dessus de toi... mais aucun corbeau ne descend te trouver."));
-            uTurnTowardSender(b, senderName, subject, body);
-            return;
+        // Décision d'arrivée selon l'état d'abri du destinataire :
+        //  EXPOSED          → descente et livraison normales
+        //  SURFACE_SHELTER  → corbeau patiente en orbite 60s, attend que le joueur sorte
+        //  DEEP_SHELTER     → demi-tour immédiat depuis l'altitude de croisière (cave/eau)
+        // Pas de boucle : un retour qui retrouve l'expéditeur lui-même sheltered finit par
+        // dropper sur place via handleRecipientGone.
+        if (!wasReturn) {
+            ShelterState shelter = getShelterState(recipient);
+            if (shelter == ShelterState.DEEP_SHELTER) {
+                recipient.sendSystemMessage(Component.literal(
+                    "§8§oUn battement d'ailes au-dessus de toi... mais aucun corbeau ne descend te trouver."));
+                uTurnTowardSender(b, senderName, subject, body);
+                return;
+            }
+            if (shelter == ShelterState.SURFACE_SHELTER) {
+                recipient.sendSystemMessage(Component.literal(
+                    "§8§oVous entendez les battements d'un corbeau, il semble vous attendre non loin d'ici..."));
+                enterWaitingOutside(b, recipient);
+                return;
+            }
         }
 
         // Si une autre lettre est en cours d'interaction → file d'attente à haute altitude.
