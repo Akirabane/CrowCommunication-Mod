@@ -66,13 +66,24 @@ public class CorbeauManager {
     // ============================ Types ============================
 
     private enum Kind { SUMMON, DELIVERY }
-    private enum Phase { INCOMING, WAITING, OUTGOING }
+    /**
+     * États de vie d'un corbeau.
+     * <ul>
+     *   <li>{@code INCOMING} : descente depuis le ciel vers le joueur cible.</li>
+     *   <li>{@code WAITING} : posé/hover près du joueur, en cours d'interaction.</li>
+     *   <li>{@code HOVERING} : tourne en rond à haute altitude au-dessus du destinataire, en file d'attente
+     *       parce qu'un autre corbeau est déjà en {@code WAITING}. Descendra en {@code INCOMING} dès libération.</li>
+     *   <li>{@code OUTGOING} : repart (livré, refusé, ou demi-tour retour vers l'expéditeur).</li>
+     * </ul>
+     */
+    private enum Phase { INCOMING, WAITING, OUTGOING, HOVERING }
 
     private static final class Bird {
         Kind kind;
         final Mob chicken;
         ServerPlayer player;
-        final Vec3 origin;
+        /** Point d'origine de la phase INCOMING — non final car réécrit lors d'une promotion HOVERING → INCOMING. */
+        Vec3 origin;
         Phase phase;
         int ticks;
         Vec3 flyTo;
@@ -96,6 +107,11 @@ public class CorbeauManager {
         Vec3 outgoingFrom;
         /** Vrai si ce corbeau de livraison transporte une lettre retournée (le destinataire AFK la renvoie). */
         boolean isReturn;
+
+        /** Tick serveur auquel ce bird est entré en HOVERING — ordre FIFO pour la promotion. */
+        long hoverArrivalTick;
+        /** Index d'orbite stable assigné à l'entrée en HOVERING (utilisé pour l'angle du tournoiement). */
+        int hoverSlot;
 
         Bird(Kind k, Mob c, ServerPlayer p, Vec3 origin) {
             this.kind = k; this.chicken = c; this.player = p; this.origin = origin;
@@ -512,6 +528,8 @@ public class CorbeauManager {
         match.ticks = 0;
         Vec3 dir = player.getLookAngle().reverse();
         match.flyTo = player.getEyePosition().add(dir.x * 26, 24, dir.z * 26);
+        // Le suivant en file d'attente peut maintenant descendre
+        promoteNextHovering(player);
     }
 
     // ============================ Spawn ============================
@@ -680,11 +698,10 @@ public class CorbeauManager {
         // 1) Livraisons temporelles → entrent dans la queue du joueur
         DeliveryScheduler.tickPending(server);
 
-        // 2) Dispatcher : pour chaque joueur en ligne avec une queue, si pas de delivery active, spawn
+        // 2) Dispatcher : un nouveau bird par tick par destinataire — il tournoiera en file si besoin
         for (UUID uid : DeliveryScheduler.queuedPlayerUUIDs()) {
             ServerPlayer p = server.getPlayerList().getPlayer(uid);
             if (p == null || p.isRemoved()) continue;
-            if (hasActiveDeliveryFor(p)) continue;
             QueuedMessage msg = DeliveryScheduler.pollFirst(uid);
             if (msg == null) continue;
             spawnDeliveryBird(p, msg);
@@ -694,8 +711,14 @@ public class CorbeauManager {
         List<Bird> toRemove = new ArrayList<>();
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
-                if (b.chicken == null || b.chicken.isRemoved() || b.player.isRemoved()) {
-                    if (b.chicken != null && !b.chicken.isRemoved()) b.chicken.discard();
+                if (b.chicken == null || b.chicken.isRemoved()) {
+                    if (b.chicken != null) b.chicken.discard();
+                    toRemove.add(b); continue;
+                }
+                // Joueur déconnecté : un corbeau de livraison fait demi-tour, les autres se vident
+                if (b.player.isRemoved()) {
+                    if (handleRecipientGone(b)) { continue; }
+                    b.chicken.discard();
                     toRemove.add(b); continue;
                 }
                 b.ticks++;
@@ -731,6 +754,7 @@ public class CorbeauManager {
         switch (b.phase) {
             case INCOMING -> tickIncoming(b);
             case WAITING  -> tickWaiting(b);
+            case HOVERING -> tickHovering(b);
             case OUTGOING -> {
                 if (b.ticks % 6 == 0) {
                     b.chicken.level().playSound(null, b.chicken.blockPosition(),
@@ -801,10 +825,219 @@ public class CorbeauManager {
         }
     }
 
+    // ============================ File d'attente HOVERING ============================
+
+    /** Y minimum auquel les corbeaux en attente tournoient au-dessus du destinataire. */
+    private static final double HOVER_ALTITUDE = 100.0;
+    /** Marge minimale au-dessus du joueur (si le joueur est très haut, on hover encore plus haut). */
+    private static final double HOVER_ABOVE_PLAYER = 25.0;
+    /** Rayon d'orbite des corbeaux en HOVERING autour du destinataire. */
+    private static final double HOVER_RADIUS = 7.5;
+
+    /** @return {@code true} si un corbeau de livraison est déjà en interaction (WAITING) avec ce joueur. */
+    private static boolean hasWaitingBirdFor(ServerPlayer p) {
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.kind == Kind.DELIVERY && b.phase == Phase.WAITING && b.player == p) return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return nombre de corbeaux actuellement en HOVERING pour ce joueur. */
+    private static int countHoveringFor(ServerPlayer p) {
+        int n = 0;
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.kind == Kind.DELIVERY && b.phase == Phase.HOVERING && b.player == p) n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * Place ce bird en HOVERING au-dessus du destinataire — il tournera en rond le temps qu'une
+     * place de WAITING se libère. Discret côté RP : on prévient le destinataire dès le 2ème en file.
+     */
+    private static void enterHovering(Bird b, ServerPlayer recipient) {
+        b.player = recipient;
+        b.phase = Phase.HOVERING;
+        b.ticks = 0;
+        b.hoverArrivalTick = recipient.getServer() == null ? 0L
+            : recipient.getServer().getTickCount();
+        b.hoverSlot = countHoveringFor(recipient);
+        b.chicken.setInvulnerable(false); // reste interceptable
+        b.chicken.setDeltaMovement(Vec3.ZERO);
+        // Un petit message au destinataire pour l'avertir qu'un autre corbeau patiente
+        int totalQueued = countHoveringFor(recipient);
+        recipient.sendSystemMessage(Component.literal(
+            "§8§oUn autre corbeau tournoie là-haut — il patientera son tour (§f"
+            + totalQueued + "§8 en attente)."));
+    }
+
+    /**
+     * Promeut le plus ancien corbeau HOVERING de ce joueur en INCOMING — il descend pour interaction.
+     * À appeler dès qu'un bird WAITING libère sa place.
+     */
+    private static void promoteNextHovering(ServerPlayer p) {
+        Bird oldest = null;
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.kind == Kind.DELIVERY && b.phase == Phase.HOVERING && b.player == p) {
+                    if (oldest == null || b.hoverArrivalTick < oldest.hoverArrivalTick) {
+                        oldest = b;
+                    }
+                }
+            }
+        }
+        if (oldest == null) return;
+        // Repart en descente depuis sa position de tournoiement
+        oldest.origin = oldest.chicken.position();
+        oldest.phase = Phase.INCOMING;
+        oldest.ticks = 0;
+    }
+
+    /**
+     * Renvoie tous les corbeaux HOVERING de ce destinataire vers leurs expéditeurs respectifs.
+     * Appelé quand le destinataire devient AFK ou se déconnecte — la file entière fait demi-tour.
+     */
+    private static void returnAllHoveringHome(ServerPlayer recipient) {
+        MinecraftServer server = recipient.getServer();
+        if (server == null) return;
+        String recipientName = recipient.getGameProfile().getName();
+        synchronized (BIRDS) {
+            for (Bird b : BIRDS) {
+                if (b.kind != Kind.DELIVERY || b.phase != Phase.HOVERING) continue;
+                if (b.player != recipient) continue;
+                ServerPlayer originalSender = server.getPlayerList().getPlayerByName(b.sender);
+                if (originalSender != null && !originalSender.isRemoved()
+                        && originalSender.level().dimension().equals(b.chicken.level().dimension())) {
+                    String origSubject = b.subject;
+                    String origBody = b.body;
+                    String origSenderName = b.sender;
+                    b.player = originalSender;
+                    b.recipientName = origSenderName;
+                    b.sender = recipientName;
+                    b.outSubject = origSubject;
+                    b.outBody = origBody;
+                    b.isReturn = true;
+                    long delayTicks = Math.max(20L * 5L,
+                        computeDeliveryDelayTicks(originalSender, originalSender));
+                    b.outgoingDurationTicks = delayTicks;
+                    b.outgoingFrom = b.chicken.position();
+                    b.deliveryIds = null;
+                    b.phase = Phase.OUTGOING;
+                    b.ticks = 0;
+                    b.flyTo = originalSender.position().add(0, 1.6, 0);
+                    b.chicken.setInvulnerable(false);
+                } else {
+                    // Expéditeur introuvable : on laisse tomber la lettre sur place (haute altitude).
+                    if (b.chicken.level() instanceof ServerLevel sl) {
+                        String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                            ? b.displaySender : b.sender;
+                        ItemStack letter = LetterRenderer.makeLetterItem(shown, b.subject, b.body);
+                        Vec3 pos = b.chicken.position();
+                        ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
+                        drop.setDeltaMovement(0, -0.05, 0);
+                        sl.addFreshEntity(drop);
+                    }
+                    b.phase = Phase.OUTGOING;
+                    b.ticks = 0;
+                    b.outSubject = null; b.outBody = null;
+                    b.outgoingDurationTicks = 0;
+                    b.flyTo = b.chicken.position().add(20, 0, 0);
+                }
+            }
+        }
+    }
+
+    /**
+     * Tente de faire demi-tour d'un bird DELIVERY dont le destinataire vient de disparaître
+     * (déconnexion). Retourne {@code true} si le bird a été repositionné (à conserver) ; {@code false}
+     * s'il doit être supprimé (SUMMON orphelin, OUTGOING déjà reparti, ou expéditeur introuvable).
+     */
+    private static boolean handleRecipientGone(Bird b) {
+        if (b.kind != Kind.DELIVERY) return false;
+        if (b.phase != Phase.WAITING && b.phase != Phase.HOVERING && b.phase != Phase.INCOMING) return false;
+        // Chercher l'expéditeur original via le nom
+        MinecraftServer server = null;
+        if (b.chicken.level() instanceof ServerLevel sl) server = sl.getServer();
+        if (server == null || b.sender == null) return false;
+        ServerPlayer originalSender = server.getPlayerList().getPlayerByName(b.sender);
+        if (originalSender == null || originalSender.isRemoved()
+                || !originalSender.level().dimension().equals(b.chicken.level().dimension())) {
+            // Personne pour récupérer — drop sur place et discard
+            if (b.chicken.level() instanceof ServerLevel sl) {
+                String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                    ? b.displaySender : b.sender;
+                if (b.subject != null && b.body != null) {
+                    ItemStack letter = LetterRenderer.makeLetterItem(shown, b.subject, b.body);
+                    Vec3 pos = b.chicken.position();
+                    ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
+                    drop.setDeltaMovement(0, -0.05, 0);
+                    sl.addFreshEntity(drop);
+                }
+            }
+            return false;
+        }
+        // Demi-tour vers l'expéditeur initial
+        String origSubject = b.subject;
+        String origBody = b.body;
+        String origSenderName = b.sender;
+        b.player = originalSender;
+        b.recipientName = origSenderName;
+        b.sender = origSenderName; // l'expéditeur d'origine devient son propre destinataire (retour)
+        b.outSubject = origSubject;
+        b.outBody = origBody;
+        b.isReturn = true;
+        long delayTicks = Math.max(20L * 5L,
+            computeDeliveryDelayTicks(originalSender, originalSender));
+        b.outgoingDurationTicks = delayTicks;
+        b.outgoingFrom = b.chicken.position();
+        b.deliveryIds = null;
+        b.phase = Phase.OUTGOING;
+        b.ticks = 0;
+        b.flyTo = originalSender.position().add(0, 1.6, 0);
+        b.chicken.setInvulnerable(false);
+        return true;
+    }
+
+    /** Tick d'un bird en file d'attente HOVERING — orbite à haute altitude au-dessus du destinataire. */
+    private static void tickHovering(Bird b) {
+        ServerPlayer p = b.player;
+        if (p == null || p.isRemoved()
+                || !p.level().dimension().equals(b.chicken.level().dimension())) {
+            return; // le tick principal gérera la déco / changement de dimension
+        }
+        double cruiseY = Math.max(HOVER_ALTITUDE, p.getY() + HOVER_ABOVE_PLAYER);
+        double angle = b.hoverSlot * 2.4 + b.ticks * 0.025;
+        double radius = HOVER_RADIUS + (b.hoverSlot % 3) * 1.5;
+        double tx = p.getX() + Math.cos(angle) * radius;
+        double tz = p.getZ() + Math.sin(angle) * radius;
+        double ty = cruiseY + Math.sin(b.ticks * 0.08) * 0.6;
+        Vec3 cur = b.chicken.position();
+        Vec3 desired = new Vec3(tx, ty, tz);
+        Vec3 step = desired.subtract(cur);
+        double stepLen = step.length();
+        if (stepLen > 1.6) step = step.normalize().scale(1.6);
+        Vec3 newPos = cur.add(step);
+        Vec3 yawStep = new Vec3(tx - cur.x, 0, tz - cur.z);
+        float yaw = yawStep.lengthSqr() > 0.01 ? computeYaw(yawStep) : b.chicken.getYRot();
+        b.chicken.moveTo(newPos.x, newPos.y, newPos.z, yaw, -8f);
+        if (b.ticks % 14 == 0) spawnFeatherTrail(b.chicken);
+        if (b.ticks % 60 == 0) {
+            b.chicken.level().playSound(null, b.chicken.blockPosition(),
+                SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.18f, 0.55f);
+        }
+    }
+
+    // ============================ Arrivée en place ============================
+
     /**
      * Conversion en place à l'arrivée d'un corbeau porteur (SUMMON livrant au destinataire, ou
      * DELIVERY de retour livrant à l'expéditeur initial). Le même oiseau reste en jeu et
      * passe en WAITING auprès du nouvel interlocuteur — pas de poof, pas de bird dupliqué.
+     * Si une interaction est déjà en cours pour ce destinataire, le bird passe en HOVERING.
      */
     private static void arriveCarrying(Bird b, ServerPlayer recipient, List<Bird> toRemove) {
         boolean wasReturn = b.isReturn;
@@ -829,9 +1062,6 @@ public class CorbeauManager {
         }
 
         b.kind = Kind.DELIVERY;
-        b.player = recipient;
-        b.phase = Phase.WAITING;
-        b.ticks = 0;
         b.msgId = msgId;
         b.sender = senderName;
         b.subject = subject;
@@ -841,6 +1071,16 @@ public class CorbeauManager {
         b.outBody = null;
         b.outgoingDurationTicks = 0;
         b.deliveryIds = null;
+
+        // Si une autre lettre est en cours d'interaction → file d'attente à haute altitude.
+        if (hasWaitingBirdFor(recipient)) {
+            enterHovering(b, recipient);
+            return;
+        }
+
+        b.player = recipient;
+        b.phase = Phase.WAITING;
+        b.ticks = 0;
         b.chicken.setInvulnerable(false);
         b.chicken.setDeltaMovement(Vec3.ZERO);
 
@@ -866,6 +1106,11 @@ public class CorbeauManager {
         spawnFeatherTrail(b.chicken);
 
         if (cur.distanceTo(target) < 1.2 || progress >= 1.0) {
+            // Si une autre lettre est en cours d'interaction → file d'attente HOVERING
+            if (b.kind == Kind.DELIVERY && hasWaitingBirdFor(b.player)) {
+                enterHovering(b, b.player);
+                return;
+            }
             b.phase = Phase.WAITING;
             b.ticks = 0;
             b.chicken.setDeltaMovement(Vec3.ZERO);
@@ -1005,6 +1250,8 @@ public class CorbeauManager {
                     String recipientName = b.player.getGameProfile().getName();
                     b.player.sendSystemMessage(Component.literal(
                         "§8§oLasse d'attendre, le corbeau s'envole — il rapporte la lettre à son expéditeur."));
+                    // Les autres corbeaux en file d'attente repartent aussi vers leurs expéditeurs
+                    returnAllHoveringHome(b.player);
                     String origSubject = b.subject;
                     String origBody = b.body;
                     String origSenderName = b.sender;
