@@ -52,6 +52,11 @@ public final class LetterRenderer {
         Component title = Component.literal("✉ " + subject).withStyle(s ->
             s.withColor(ChatFormatting.LIGHT_PURPLE).withItalic(false));
         stack.setHoverName(title);
+        // Tags NBT custom pour la lecture client-side (right-click viewer)
+        CompoundTag crow = stack.getOrCreateTag();
+        crow.putString("crow_sender",  sender  != null ? sender  : "");
+        crow.putString("crow_subject", subject != null ? subject : "");
+        crow.putString("crow_body",    body    != null ? body    : "");
 
         CompoundTag display = stack.getOrCreateTagElement("display");
         ListTag lore = new ListTag();

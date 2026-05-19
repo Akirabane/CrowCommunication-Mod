@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Écrire une lettre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="compose.css">
+</head>
+<body>
+<main class="letter">
+  <header class="letter-head">
+    <div class="seal">
+      <svg viewBox="0 0 60 60" width="46" height="46">
+        <circle cx="30" cy="30" r="28" fill="#1a0e08" stroke="#3a2418" stroke-width="2"/>
+        <path d="M16 22 L30 36 L44 22 M30 36 L30 46" stroke="#d4a017" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="title-wrap">
+      <div class="eyebrow">Service du corbeau</div>
+      <h1>Écrire une <em>lettre</em></h1>
+      <p class="sub">Le corbeau attend devant toi. Confie-lui ton message.</p>
+    </div>
+    <button id="dismissBtn" type="button" class="dismiss">✕</button>
+  </header>
+
+  <div class="form">
+    <div class="field recap">
+      <span class="label">À</span>
+      <div id="recipients" class="recipients">—</div>
+    </div>
+
+    <label class="field">
+      <span class="label">Objet</span>
+      <input id="subject" type="text" maxlength="80" placeholder="Quelques mots pour résumer" autofocus>
+    </label>
+
+    <label class="field">
+      <span class="label">Message</span>
+      <textarea id="body" maxlength="2000" rows="8" placeholder="Cher ami,&#10;&#10;..."></textarea>
+      <div class="counter"><span id="count">0</span> / 2000</div>
+    </label>
+
+    <div class="forge-block">
+      <label class="forge-toggle">
+        <input id="forgeCheck" type="checkbox">
+        <span class="forge-label">Usurper un sceau</span>
+        <span class="forge-hint">Imite la plume d'un autre — l'épreuve est dure et incertaine.</span>
+      </label>
+      <div id="forgeField" class="field forge-target hidden">
+        <span class="label">Pseudo à imiter</span>
+        <input id="forgeName" type="text" maxlength="32" placeholder="Le nom à faire croire">
+      </div>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+
+    <div class="actions">
+      <button id="cancelBtn" type="button" class="btn ghost">Annuler</button>
+      <button id="sendBtn" type="button" class="btn primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+        Envoyer par corbeau
+      </button>
+    </div>
+  </div>
+</main>
+
+<div id="qteOverlay" class="qte-overlay hidden">
+  <div class="qte-card">
+    <div class="qte-eyebrow">Épreuve d'usurpation</div>
+    <h2 class="qte-title">Imite le sceau</h2>
+    <p class="qte-sub">Frappe <strong>Espace</strong> quand le marqueur passe sur la zone d'or. <span id="qteRound">Manche 1 / 3</span></p>
+    <div id="qteBar" class="qte-bar">
+      <div id="qteZone" class="qte-zone"></div>
+      <div id="qteMarker" class="qte-marker"></div>
+    </div>
+    <div id="qteFeedback" class="qte-feedback">Concentre-toi…</div>
+    <div class="qte-actions">
+      <button id="qteAbort" type="button" class="btn ghost">Renoncer</button>
+      <button id="qteHit" type="button" class="btn primary">Frapper</button>
+    </div>
+  </div>
+</div>
+
+<script src="compose.js"></script>
+</body>
+</html>

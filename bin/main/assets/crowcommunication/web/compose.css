@@ -1,0 +1,394 @@
+:root {
+  --paper:   #f2e6c6;
+  --paper-2: #e9d8a4;
+  --ink:     #1a1008;
+  --ink-soft:#5a3c1e;
+  --gold:    #b07e14;
+  --gold-bright: #cc9c1e;
+  --script:  'Caveat', 'Comic Sans MS', cursive;
+  --sans:    'Inter', system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%; width: 100%;
+  font-family: var(--script);
+  background: transparent;
+  color: var(--ink);
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════
+   Feuille de lettre — texture papier en CSS
+   ═══════════════════════════════════════════ */
+.letter {
+  position: relative; z-index: 1;
+  width: min(680px, 92vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  margin: 3vh auto 2vh;
+  padding: 28px 40px 24px;
+
+  background:
+    /* Fibres de papier — deux séries de lignes très fines à angles légèrement différents */
+    repeating-linear-gradient(
+      92deg,
+      transparent 0px, transparent 5px,
+      rgba(165,120,50,0.028) 5px, rgba(165,120,50,0.028) 6px
+    ),
+    repeating-linear-gradient(
+      178deg,
+      transparent 0px, transparent 8px,
+      rgba(150,108,42,0.022) 8px, rgba(150,108,42,0.022) 9px
+    ),
+    /* Taches de grain — patches irréguliers de densité variable */
+    radial-gradient(ellipse at  6%  9%,  rgba(200,152,68,0.14) 0%, transparent 22%),
+    radial-gradient(ellipse at 93%  7%,  rgba(185,140,62,0.12) 0%, transparent 18%),
+    radial-gradient(ellipse at 17% 31%,  rgba(192,146,66,0.10) 0%, transparent 20%),
+    radial-gradient(ellipse at 81% 29%,  rgba(178,136,60,0.11) 0%, transparent 15%),
+    radial-gradient(ellipse at 44% 17%,  rgba(196,150,70,0.08) 0%, transparent 25%),
+    radial-gradient(ellipse at 69% 61%,  rgba(174,132,58,0.12) 0%, transparent 18%),
+    radial-gradient(ellipse at 23% 74%,  rgba(190,145,66,0.09) 0%, transparent 17%),
+    radial-gradient(ellipse at 61% 87%,  rgba(182,138,63,0.11) 0%, transparent 22%),
+    radial-gradient(ellipse at 89% 79%,  rgba(170,128,56,0.08) 0%, transparent 14%),
+    radial-gradient(ellipse at 37% 51%,  rgba(184,140,64,0.06) 0%, transparent 30%),
+    radial-gradient(ellipse at 55% 38%,  rgba(178,135,61,0.07) 0%, transparent 24%),
+    radial-gradient(ellipse at 12% 62%,  rgba(196,150,68,0.08) 0%, transparent 16%),
+    /* Halo chaud au centre — effet lumière naturelle sur le papier */
+    radial-gradient(ellipse at 50% 40%,  rgba(255,238,190,0.14) 0%, transparent 58%),
+    /* Bords légèrement plus sombres — patine et ombres de courbure */
+    radial-gradient(ellipse at  0% 50%,  rgba(130,90,30,0.07) 0%, transparent 25%),
+    radial-gradient(ellipse at 100% 50%, rgba(130,90,30,0.06) 0%, transparent 22%),
+    radial-gradient(ellipse at 50%  0%,  rgba(140,100,35,0.06) 0%, transparent 30%),
+    radial-gradient(ellipse at 50% 100%, rgba(120,85,28,0.08) 0%, transparent 30%),
+    /* Dégradé de base — parchemin vieilli */
+    linear-gradient(168deg, #f6eacf 0%, #eedeb9 25%, #e8d4a5 60%, #e3cc9a 100%);
+
+  border-radius: 3px;
+  box-shadow:
+    0 2px 5px  rgba(0,0,0,0.10),
+    0 10px 28px rgba(0,0,0,0.22),
+    0 28px 60px rgba(0,0,0,0.28),
+    inset 0 0 80px rgba(130,90,30,0.09),
+    inset 0 0 0 1px rgba(190,150,70,0.22);
+
+  /* Légère inclinaison pour simuler une feuille posée à la main */
+  transform: rotate(-0.3deg);
+  animation: slideIn .5s cubic-bezier(.2,.7,.2,1);
+}
+
+/* Bandes déco haut / bas (style papier à lettres) */
+.letter::before, .letter::after {
+  content: ""; position: absolute; left: 0; right: 0;
+  height: 22px;
+  background: repeating-linear-gradient(45deg,
+    transparent 0 6px,
+    rgba(185,45,45,0.38) 6px 8px,
+    transparent 8px 14px,
+    rgba(28,46,120,0.38) 14px 16px);
+  opacity: 0.65;
+}
+.letter::before { top: 0; border-radius: 3px 3px 0 0; }
+.letter::after  { bottom: 0; border-radius: 0 0 3px 3px; }
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-26px) rotate(-1.6deg); }
+  to   { opacity: 1; transform: translateY(0)     rotate(-0.3deg); }
+}
+
+/* ═══════════════ En-tête ═══════════════ */
+.letter-head {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding-bottom: 20px;
+  border-bottom: 1px dashed rgba(115,82,42,0.42);
+  margin-bottom: 22px;
+}
+.seal { flex: 0 0 auto; filter: drop-shadow(0 3px 8px rgba(0,0,0,0.30)); }
+.title-wrap { flex: 1; }
+
+.eyebrow {
+  font-family: var(--sans);
+  font-size: 10px; letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--gold);
+  font-weight: 600;
+}
+
+.letter-head h1 {
+  font-family: var(--script);
+  font-size: 44px; font-weight: 700; line-height: 1;
+  color: var(--ink);
+  margin: 4px 0 3px;
+}
+.letter-head h1 em {
+  font-style: italic;
+  background: linear-gradient(90deg, var(--gold-bright), #7a4a14);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+}
+.letter-head .sub {
+  font-family: var(--script);
+  font-size: 15px; color: var(--ink-soft); font-style: italic;
+}
+
+.dismiss {
+  flex: 0 0 auto;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: rgba(140,100,50,0.12);
+  border: 1px solid rgba(115,82,42,0.28);
+  color: var(--ink-soft);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .2s;
+  font-family: var(--sans);
+}
+.dismiss:hover { background: rgba(150,50,50,0.22); border-color: rgba(150,50,50,0.48); color: #8a1c1c; }
+
+/* ═══════════════ Formulaire ═══════════════ */
+.field {
+  display: block;
+  margin-bottom: 18px;
+  position: relative;
+}
+.field .label {
+  display: block;
+  font-family: var(--script);
+  font-size: 14px; font-style: italic;
+  color: var(--ink-soft);
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+.field input, .field textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(110,78,38,0.32);
+  padding: 4px 2px 7px;
+  font-family: var(--script);
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--ink);
+  outline: none;
+  resize: none;
+  transition: border-color .2s;
+}
+.field input:focus, .field textarea:focus {
+  border-bottom-color: var(--gold);
+}
+.field textarea {
+  font-size: 18px;
+  line-height: 1.70;
+  border: 1px solid rgba(110,78,38,0.22);
+  /* Lignes réglées — correspondent à la hauteur de ligne du script */
+  background-image: repeating-linear-gradient(
+    transparent 0 29px,
+    rgba(110,78,38,0.16) 29px 30px
+  );
+  background-attachment: local;
+  padding: 5px 10px 8px;
+  border-radius: 2px;
+}
+.field input::placeholder, .field textarea::placeholder {
+  color: rgba(90,60,28,0.38);
+  font-style: italic;
+}
+
+.recipients {
+  font-family: var(--script);
+  font-size: 20px;
+  color: var(--ink);
+  padding: 4px 2px 7px;
+  border-bottom: 1px solid rgba(110,78,38,0.32);
+  font-style: italic;
+}
+
+.counter {
+  position: absolute; right: 6px; bottom: -18px;
+  font-size: 10px; color: var(--ink-soft);
+  font-family: var(--sans);
+  opacity: 0.7;
+}
+
+/* ═══════════════ Erreur ═══════════════ */
+.error {
+  margin-top: 12px;
+  padding: 8px 14px;
+  background: rgba(155,36,24,0.10);
+  border: 1px solid rgba(155,36,24,0.36);
+  border-radius: 4px;
+  color: #7e2014;
+  font-family: var(--script);
+  font-size: 16px;
+  font-style: italic;
+  animation: shake .4s ease;
+}
+.error.hidden { display: none; }
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(3px); }
+  30%, 50%, 70% { transform: translateX(-5px); }
+  40%, 60% { transform: translateX(5px); }
+}
+
+/* ═══════════════ Actions ═══════════════ */
+.actions {
+  display: flex; justify-content: flex-end; gap: 12px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px dashed rgba(110,78,38,0.32);
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 22px;
+  border-radius: 999px;
+  font-family: var(--script);
+  font-size: 17px; font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all .2s ease;
+}
+.btn.ghost {
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: rgba(110,78,38,0.38);
+}
+.btn.ghost:hover { background: rgba(140,100,48,0.10); color: var(--ink); }
+.btn.primary {
+  background: linear-gradient(135deg, #36200e, #190c04);
+  color: var(--gold-bright);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.30);
+  border-color: rgba(205,155,20,0.38);
+}
+.btn.primary:hover {
+  box-shadow: 0 10px 26px rgba(0,0,0,0.42), 0 0 20px rgba(205,155,20,0.28);
+  transform: translateY(-1px);
+}
+
+/* ═══════════════ Bloc usurpation ═══════════════ */
+.forge-block {
+  margin-top: 22px;
+  padding: 14px 16px;
+  background: rgba(80,30,18,0.06);
+  border: 1px dashed rgba(140,30,30,0.32);
+  border-radius: 4px;
+}
+.forge-toggle {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 10px;
+  align-items: center;
+  cursor: pointer;
+  font-family: var(--script);
+}
+.forge-toggle input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: #8a1c1c;
+  cursor: pointer;
+}
+.forge-label {
+  font-size: 18px;
+  color: #6e1818;
+  font-style: italic;
+}
+.forge-hint {
+  grid-column: 2;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-style: italic;
+  opacity: 0.85;
+}
+.forge-target { margin-top: 14px; margin-bottom: 0; }
+.forge-target.hidden { display: none; }
+
+/* ═══════════════ Overlay QTE ═══════════════ */
+.qte-overlay {
+  position: fixed; inset: 0;
+  background: rgba(8,4,2,0.78);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+.qte-overlay.hidden { display: none; }
+
+.qte-card {
+  width: min(560px, 90vw);
+  padding: 28px 34px 24px;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,238,190,0.10) 0%, transparent 60%),
+    linear-gradient(168deg, #f6eacf 0%, #eedeb9 100%);
+  border-radius: 4px;
+  border: 1px solid rgba(140,30,30,0.30);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.55), inset 0 0 60px rgba(130,30,30,0.06);
+  animation: qteIn .25s ease-out;
+}
+@keyframes qteIn {
+  from { transform: scale(.92); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+.qte-eyebrow {
+  font-family: var(--sans);
+  font-size: 10px; letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #8a1c1c;
+  font-weight: 700;
+}
+.qte-title {
+  font-family: var(--script);
+  font-size: 36px; font-weight: 700;
+  color: var(--ink);
+  margin: 2px 0 6px;
+}
+.qte-sub {
+  font-family: var(--script);
+  font-size: 16px; font-style: italic;
+  color: var(--ink-soft);
+  margin-bottom: 18px;
+}
+.qte-sub strong {
+  font-family: var(--sans);
+  background: #1a0e08;
+  color: #d4a017;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.qte-bar {
+  position: relative;
+  width: 100%; height: 38px;
+  background: linear-gradient(180deg, rgba(40,22,10,0.18), rgba(20,12,6,0.30));
+  border: 1px solid rgba(60,30,16,0.50);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 6px 0 14px;
+}
+.qte-zone {
+  position: absolute; top: 0; bottom: 0;
+  background: linear-gradient(180deg, rgba(212,160,23,0.65), rgba(176,126,20,0.85));
+  border-left: 2px solid #f4d970;
+  border-right: 2px solid #f4d970;
+  box-shadow: 0 0 12px rgba(212,160,23,0.6);
+}
+.qte-marker {
+  position: absolute; top: -2px; bottom: -2px;
+  width: 4px;
+  background: linear-gradient(180deg, #f0eada, #8a1c1c);
+  box-shadow: 0 0 8px rgba(255,40,40,0.85);
+  transition: left 0s linear;
+}
+
+.qte-feedback {
+  font-family: var(--script);
+  font-size: 18px; font-style: italic;
+  color: var(--ink-soft);
+  min-height: 24px;
+  text-align: center;
+}
+.qte-feedback.good { color: #2e6e1c; }
+.qte-feedback.bad  { color: #8a1c1c; }
+
+.qte-actions {
+  display: flex; justify-content: space-between; gap: 12px;
+  margin-top: 16px;
+}

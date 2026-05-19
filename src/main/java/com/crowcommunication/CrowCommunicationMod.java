@@ -37,6 +37,7 @@ public class CrowCommunicationMod {
     private void clientSetup(final FMLClientSetupEvent event) {
         event.enqueueWork(() -> {
             MinecraftForge.EVENT_BUS.register(com.crowcommunication.client.web.ClientLoginHook.class);
+            MinecraftForge.EVENT_BUS.register(com.crowcommunication.client.web.LetterViewHandler.class);
             com.crowcommunication.client.web.MCEFBootstrap.init();
         });
     }

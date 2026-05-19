@@ -33,6 +33,8 @@ public class NetworkHandler {
         CHANNEL.registerMessage(id++, PacketSendMessage.class, PacketSendMessage::encode, PacketSendMessage::decode, PacketSendMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
         CHANNEL.registerMessage(id++, PacketCancelLetter.class, PacketCancelLetter::encode, PacketCancelLetter::decode, PacketCancelLetter::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
         CHANNEL.registerMessage(id++, PacketMCEFReady.class, PacketMCEFReady::encode, PacketMCEFReady::decode, PacketMCEFReady::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(id++, PacketCloseCompose.class, PacketCloseCompose::encode, PacketCloseCompose::decode, PacketCloseCompose::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(id++, PacketResealLetter.class, PacketResealLetter::encode, PacketResealLetter::decode, PacketResealLetter::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
     }
 
     /**

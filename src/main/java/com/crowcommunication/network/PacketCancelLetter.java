@@ -23,6 +23,7 @@ public class PacketCancelLetter {
             if (sender != null) {
                 CorbeauManager.takePendingGroup(sender);
                 CorbeauManager.onLetterCancelled(sender);
+                NetworkHandler.sendToClient(new PacketCloseCompose(), sender);
             }
         });
         ctx.get().setPacketHandled(true);

@@ -51,12 +51,12 @@ import net.minecraftforge.registries.ForgeRegistries;
  * <ol>
  *   <li>À échéance, le message entre dans la {@link #QUEUE} du destinataire.</li>
  *   <li>Un corbeau {@code DELIVERY} est spawné ; il descend, affiche la lettre dans le chat
- *       et attend la décision du joueur (max 15 s).</li>
+ *       et attend la décision du joueur (max 60 s).</li>
  *   <li>Le joueur garde ou détruit la lettre ; le corbeau repart. Le message suivant suit.</li>
  * </ol>
  *
  * <h2>Timeout</h2>
- * <p>Sans réponse en 15 s, la lettre est droppée devant l'expéditeur original et le corbeau repart.</p>
+ * <p>Sans réponse en 60 s, la lettre est droppée devant l'expéditeur original et le corbeau repart.</p>
  *
  * <h2>Interception</h2>
  * <p>Un corbeau {@code DELIVERY} est vulnérable : abattu à l'arc, la lettre tombe au sol.</p>
@@ -112,6 +112,8 @@ public class CorbeauManager {
         long hoverArrivalTick;
         /** Index d'orbite stable assigné à l'entrée en HOVERING (utilisé pour l'angle du tournoiement). */
         int hoverSlot;
+        /** Chunk actuellement forcé pour ce bird (Integer.MIN_VALUE = aucun). */
+        int lastForcedCX = Integer.MIN_VALUE, lastForcedCZ = Integer.MIN_VALUE;
 
         Bird(Kind k, Mob c, ServerPlayer p, Vec3 origin) {
             this.kind = k; this.chicken = c; this.player = p; this.origin = origin;
@@ -177,6 +179,7 @@ public class CorbeauManager {
     // ============================ Économie & règles ============================
 
     public static final long COOLDOWN_TICKS = 20L * 120L;          // 2 min entre deux envois
+    public static final long DEATH_COOLDOWN_TICKS = 20L * 60L * 10L; // 10 min après la mort d'un corbeau
     public static final double MAX_DELIVERY_DISTANCE = 1500.0;     // au-delà : "le corbeau s'est perdu"
     public static final double INTERCEPT_RADIUS = 32.0;            // joueurs tiers qui entendent passer
 
@@ -232,6 +235,18 @@ public class CorbeauManager {
 
     public static void markSent(ServerPlayer p) {
         if (p.getServer() != null) LAST_SEND.put(p.getUUID(), (long) p.getServer().getTickCount());
+    }
+
+    /**
+     * Inflige le cooldown long ({@link #DEATH_COOLDOWN_TICKS}) à l'expéditeur d'un corbeau abattu.
+     * Astuce : on triche sur {@code LAST_SEND} en posant un tick "futur" tel que le calcul
+     * {@code COOLDOWN_TICKS - (now - last)} restitue exactement la durée du cooldown de mort.
+     */
+    public static void markDeathCooldown(MinecraftServer server, java.util.UUID senderUUID) {
+        if (server == null || senderUUID == null) return;
+        long now = server.getTickCount();
+        long fakeLast = now + (DEATH_COOLDOWN_TICKS - COOLDOWN_TICKS);
+        LAST_SEND.put(senderUUID, fakeLast);
     }
 
     /** Façade vers {@link ForgerySystem#cooldownRemainingTicks(ServerPlayer)}. */
@@ -368,8 +383,8 @@ public class CorbeauManager {
     }
 
     /**
-     * Calcule le délai de livraison en ticks : 10 s + 1 min par 100 blocs de distance.
-     * Sous orage, 50 % de chances que le délai soit doublé.
+     * Calcule le délai de livraison en ticks : 10 s minimum + 1 s par 10 blocs de distance
+     * (≈ 10 blocs/s de vitesse de croisière). Sous orage, 50 % de chances que le délai soit doublé.
      *
      * @param sender    l'expéditeur
      * @param recipient le destinataire
@@ -377,7 +392,7 @@ public class CorbeauManager {
      */
     public static long computeDeliveryDelayTicks(ServerPlayer sender, ServerPlayer recipient) {
         double dist = senderDistance(sender, recipient);
-        long seconds = 10L + (long) Math.floor(dist / 100.0 * 60.0);
+        long seconds = 10L + (long) Math.floor(dist / 10.0);
         long ticks = seconds * 20L;
         // Météo : sous orage/pluie forte, 50% de chance que le corbeau "se perde" → delay x2
         Level lvl = sender.level();
@@ -536,11 +551,30 @@ public class CorbeauManager {
 
     /** Candidats de remplacement, par ordre de préférence. Premier trouvé = utilisé. */
     private static final ResourceLocation[] MESSENGER_CANDIDATES = new ResourceLocation[] {
-        ResourceLocation.fromNamespaceAndPath("naturalist", "sparrow"),   // priorité : moineau (Naturalist)
+        ResourceLocation.fromNamespaceAndPath("naturalist", "robin"),     // priorité : rouge-gorge (Naturalist)
+        ResourceLocation.fromNamespaceAndPath("naturalist", "sparrow"),
         ResourceLocation.fromNamespaceAndPath("naturalist", "finch"),
-        ResourceLocation.fromNamespaceAndPath("naturalist", "robin"),
         ResourceLocation.fromNamespaceAndPath("naturalist", "bluejay")
     };
+
+    private static final ResourceLocation SND_BIRD_CHIRP = new ResourceLocation("naturalist", "entity.bird.ambient_robin");
+    private static final ResourceLocation SND_BIRD_FLY   = new ResourceLocation("naturalist", "entity.bird.fly");
+
+    private static void playChirp(Mob bird) {
+        net.minecraft.sounds.SoundEvent snd = ForgeRegistries.SOUND_EVENTS.getValue(SND_BIRD_CHIRP);
+        if (snd == null) return;
+        bird.level().playSound(null, bird.blockPosition(), snd, SoundSource.NEUTRAL,
+            0.5f, 0.8f + bird.level().random.nextFloat() * 0.4f);
+    }
+
+    private static void playFly(Mob bird) {
+        net.minecraft.sounds.SoundEvent snd = ForgeRegistries.SOUND_EVENTS.getValue(SND_BIRD_FLY);
+        if (snd != null) {
+            bird.level().playSound(null, bird.blockPosition(), snd, SoundSource.NEUTRAL, 0.35f, 1.0f);
+        } else {
+            bird.level().playSound(null, bird.blockPosition(), SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.5f, 0.6f);
+        }
+    }
 
     @SuppressWarnings("unchecked")
     private static EntityType<? extends Mob> pickMessengerType() {
@@ -675,6 +709,28 @@ public class CorbeauManager {
             for (Bird b : BIRDS) if (b.chicken == mob) { match = b; break; }
         }
         if (match == null) return;
+        // Cooldown long pour l'expéditeur original — son corbeau ne s'est jamais remis du choc.
+        java.util.UUID senderUUID = null;
+        if (match.kind == Kind.SUMMON && match.player != null) {
+            senderUUID = match.player.getUUID();
+        } else if (match.kind == Kind.DELIVERY && match.sender != null && mob.level() instanceof ServerLevel sl0) {
+            String senderName = match.sender;
+            ServerPlayer origSender = sl0.getServer().getPlayerList().getPlayerByName(senderName);
+            if (origSender != null) senderUUID = origSender.getUUID();
+            // Fallback : ProfileCache pour les expéditeurs hors-ligne
+            if (senderUUID == null) {
+                var cache = sl0.getServer().getProfileCache();
+                if (cache != null) {
+                    try {
+                        var prof = cache.get(senderName);
+                        if (prof.isPresent()) senderUUID = prof.get().getId();
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
+        if (senderUUID != null && mob.level() instanceof ServerLevel sl1) {
+            markDeathCooldown(sl1.getServer(), senderUUID);
+        }
         // RP : intercepter un corbeau est totalement silencieux. Personne n'est notifié —
         // ni l'expéditeur, ni le destinataire, ni le tueur. Seule la lettre qui tombe au sol
         // dit ce qui s'est passé — au tueur de la ramasser pour découvrir.
@@ -745,9 +801,27 @@ public class CorbeauManager {
             }
             BIRDS.removeAll(toRemove);
         }
+        for (Bird b : toRemove) releaseForceChunk(b);
 
         // 4) Pigeons perdus : à l'instant programmé, la lettre tombe dans le monde
         DeliveryScheduler.tickLostPigeons(server);
+    }
+
+    private static void forceChunkAround(Bird b) {
+        if (!(b.chicken.level() instanceof ServerLevel sl)) return;
+        net.minecraft.world.level.ChunkPos cp = b.chicken.chunkPosition();
+        if (cp.x == b.lastForcedCX && cp.z == b.lastForcedCZ) return;
+        if (b.lastForcedCX != Integer.MIN_VALUE) sl.setChunkForced(b.lastForcedCX, b.lastForcedCZ, false);
+        sl.setChunkForced(cp.x, cp.z, true);
+        b.lastForcedCX = cp.x;
+        b.lastForcedCZ = cp.z;
+    }
+
+    private static void releaseForceChunk(Bird b) {
+        if (b.lastForcedCX == Integer.MIN_VALUE) return;
+        if (b.chicken.level() instanceof ServerLevel sl) sl.setChunkForced(b.lastForcedCX, b.lastForcedCZ, false);
+        b.lastForcedCX = Integer.MIN_VALUE;
+        b.lastForcedCZ = Integer.MIN_VALUE;
     }
 
     private static void spawnDeliveryBird(ServerPlayer player, QueuedMessage msg) {
@@ -775,10 +849,8 @@ public class CorbeauManager {
             case WAITING  -> tickWaiting(b);
             case HOVERING -> tickHovering(b);
             case OUTGOING -> {
-                if (b.ticks % 6 == 0) {
-                    b.chicken.level().playSound(null, b.chicken.blockPosition(),
-                        SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.5f, 0.6f);
-                }
+                if (b.ticks % 6 == 0)  playFly(b.chicken);
+                if (b.ticks % 80 == 40) playChirp(b.chicken);
                 spawnFeatherTrail(b.chicken);
 
                 boolean carryingLetter = b.outSubject != null
@@ -829,6 +901,7 @@ public class CorbeauManager {
                     Vec3 yawStep = new Vec3(desired.x - cur.x, 0, desired.z - cur.z);
                     float yaw = yawStep.lengthSqr() > 0.01 ? computeYaw(yawStep) : b.chicken.getYRot();
                     b.chicken.moveTo(newPos.x, newPos.y, newPos.z, yaw, -10f);
+                    forceChunkAround(b);
                     if (b.ticks >= b.outgoingDurationTicks) {
                         arriveCarrying(b, recipient, toRemove);
                     }
@@ -852,6 +925,17 @@ public class CorbeauManager {
     private static final double HOVER_ABOVE_PLAYER = 25.0;
     /** Rayon d'orbite des corbeaux en HOVERING autour du destinataire. */
     private static final double HOVER_RADIUS = 7.5;
+
+    /**
+     * Détermine si le destinataire est inaccessible aux yeux d'un corbeau : sous l'eau,
+     * sous un toit (plus de vue du ciel au-dessus de sa tête), ou dans une grotte.
+     */
+    private static boolean isRecipientSheltered(ServerPlayer p) {
+        if (p == null || p.isRemoved()) return false;
+        if (p.isUnderWater() || p.isInWater()) return true;
+        BlockPos head = BlockPos.containing(p.getEyePosition()).above();
+        return !p.level().canSeeSky(head);
+    }
 
     /** @return {@code true} si un corbeau de livraison est déjà en interaction (WAITING) avec ce joueur. */
     private static boolean hasWaitingBirdFor(ServerPlayer p) {
@@ -968,6 +1052,51 @@ public class CorbeauManager {
                 }
             }
         }
+    }
+
+    /**
+     * Demi-tour d'un corbeau porteur (SUMMON OUTGOING path A) qui ne peut pas livrer :
+     * destinataire sheltered ou trop loin. Le même bird repart en isReturn vers l'expéditeur initial.
+     */
+    private static void uTurnTowardSender(Bird b, String origSenderName, String origSubject, String origBody) {
+        MinecraftServer server = b.chicken.level() instanceof ServerLevel sl ? sl.getServer() : null;
+        if (server == null) {
+            poof(b.chicken);
+            b.chicken.discard();
+            return;
+        }
+        ServerPlayer originalSender = server.getPlayerList().getPlayerByName(origSenderName);
+        if (originalSender == null || originalSender.isRemoved()
+                || !originalSender.level().dimension().equals(b.chicken.level().dimension())) {
+            // Expéditeur introuvable : drop sur place
+            if (b.chicken.level() instanceof ServerLevel sl) {
+                String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                    ? b.displaySender : origSenderName;
+                ItemStack letter = LetterRenderer.makeLetterItem(shown, origSubject, origBody);
+                Vec3 pos = b.chicken.position();
+                ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
+                drop.setDeltaMovement(0, -0.05, 0);
+                sl.addFreshEntity(drop);
+            }
+            poof(b.chicken);
+            b.chicken.discard();
+            return;
+        }
+        b.player = originalSender;
+        b.recipientName = origSenderName;
+        b.sender = origSenderName;
+        b.outSubject = origSubject;
+        b.outBody = origBody;
+        b.isReturn = true;
+        long delayTicks = Math.max(20L * 5L,
+            computeDeliveryDelayTicks(originalSender, originalSender));
+        b.outgoingDurationTicks = delayTicks;
+        b.outgoingFrom = b.chicken.position();
+        b.deliveryIds = null;
+        b.phase = Phase.OUTGOING;
+        b.ticks = 0;
+        b.flyTo = originalSender.position().add(0, 1.6, 0);
+        b.chicken.setInvulnerable(false);
     }
 
     /**
@@ -1091,6 +1220,39 @@ public class CorbeauManager {
         b.outgoingDurationTicks = 0;
         b.deliveryIds = null;
 
+        // Longue distance (>1500 blocs parcourus) : le corbeau est épuisé. 50% retour, 50% perdu.
+        if (!wasReturn && b.outgoingFrom != null) {
+            double traveled = b.outgoingFrom.distanceTo(recipient.position());
+            if (traveled > MAX_DELIVERY_DISTANCE) {
+                if (b.chicken.getRandom().nextBoolean()) {
+                    uTurnTowardSender(b, senderName, subject, body);
+                } else {
+                    // Perdu : la lettre tombe sur place, le corbeau s'évapore en silence
+                    if (b.chicken.level() instanceof ServerLevel sl && subject != null && body != null) {
+                        String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                            ? b.displaySender : senderName;
+                        ItemStack letter = LetterRenderer.makeLetterItem(shown, subject, body);
+                        Vec3 pos = b.chicken.position();
+                        ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
+                        drop.setDeltaMovement(0, -0.05, 0);
+                        sl.addFreshEntity(drop);
+                    }
+                    poof(b.chicken);
+                    b.chicken.discard();
+                    toRemove.add(b);
+                }
+                return;
+            }
+        }
+
+        // Destinataire sous l'eau ou dans une grotte → le corbeau ne peut pas livrer, demi-tour
+        // vers l'expéditeur initial (la lettre repart). Pas de boucle : un retour qui retrouve
+        // l'expéditeur lui-même sheltered finit par dropper sur place via handleRecipientGone.
+        if (!wasReturn && isRecipientSheltered(recipient)) {
+            uTurnTowardSender(b, senderName, subject, body);
+            return;
+        }
+
         // Si une autre lettre est en cours d'interaction → file d'attente à haute altitude.
         if (hasWaitingBirdFor(recipient)) {
             enterHovering(b, recipient);
@@ -1123,8 +1285,16 @@ public class CorbeauManager {
         Vec3 newPos = cur.add(step);
         b.chicken.moveTo(newPos.x, newPos.y, newPos.z, computeYaw(step), -10f);
         spawnFeatherTrail(b.chicken);
+        if (b.ticks % 6 == 0)   playFly(b.chicken);
+        if (b.ticks % 80 == 20) playChirp(b.chicken);
 
         if (cur.distanceTo(target) < 1.2 || progress >= 1.0) {
+            // Destinataire sous l'eau / dans une grotte → demi-tour vers l'expéditeur initial
+            if (b.kind == Kind.DELIVERY && !b.isReturn && isRecipientSheltered(b.player)
+                    && b.sender != null && b.subject != null && b.body != null) {
+                uTurnTowardSender(b, b.sender, b.subject, b.body);
+                return;
+            }
             // Si une autre lettre est en cours d'interaction → file d'attente HOVERING
             if (b.kind == Kind.DELIVERY && hasWaitingBirdFor(b.player)) {
                 enterHovering(b, b.player);
@@ -1256,8 +1426,8 @@ public class CorbeauManager {
         }
         if (b.ticks % 12 == 0) spawnFeatherTrail(b.chicken);
 
-        // Timeout DELIVERY 15 s / SUMMON 10 min (filet de sécurité zombie-bird uniquement)
-        int timeoutTicks = b.kind == Kind.DELIVERY ? 20 * 15 : 20 * 60 * 10;
+        // Timeout DELIVERY 60 s / SUMMON 10 min (filet de sécurité zombie-bird uniquement)
+        int timeoutTicks = b.kind == Kind.DELIVERY ? 20 * 60 : 20 * 60 * 10;
         if (b.ticks > timeoutTicks) {
             if (b.kind == Kind.DELIVERY && !b.isReturn) {
                 // AFK : demi-tour en place — le même corbeau reprend son vol vers l'expéditeur initial.

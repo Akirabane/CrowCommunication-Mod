@@ -26,7 +26,8 @@ public final class MCEFBootstrap {
         try {
             webRoot = Files.createTempDirectory("corbeau-web-");
             webRoot.toFile().deleteOnExit();
-            for (String name : new String[]{"compose.html", "compose.css", "compose.js"}) {
+            for (String name : new String[]{"compose.html", "compose.css", "compose.js",
+                                           "letter_view.html", "letter_view.js"}) {
                 extractAsset("assets/crowcommunication/web/" + name, webRoot.resolve(name));
             }
         } catch (Exception e) {

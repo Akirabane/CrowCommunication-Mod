@@ -1,0 +1,32 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="CC BY-NC-ND 4.0"
+issueTrackerURL="https://github.com/Akirabane/crowcommunication/issues"
+
+[[mods]]
+    modId="crowcommunication"
+    version="${mod_version}"
+    displayName="Crow Communication Mod"
+    description='''Un système de courrier RP pour Minecraft. La commande /corbeau invoque un oiseau messager qui transporte tes lettres aux autres joueurs : interface d'écriture web, livraison temporisée selon la distance, notification toast à l'arrivée. Nécessite MCEF côté client pour l'interface.'''
+    authors="Akirabane"
+
+[[dependencies.crowcommunication]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.crowcommunication]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.crowcommunication]]
+    modId="mcef"
+    mandatory=true
+    versionRange="[2.1.6,)"
+    ordering="BEFORE"
+    side="CLIENT"

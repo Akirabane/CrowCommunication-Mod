@@ -82,10 +82,12 @@ public class WebBridge {
                 }
                 return;
             }
-            String[] parts = payload.split("\\|");
+            String[] parts = payload.split("\\|", 2);
             switch (parts[0]) {
                 case "ready" -> {}
                 case "close" -> fireClose("close");
+                // "reseal|newSender" — transmis tel quel au callback du viewer de lettre
+                case "reseal" -> fireClose("reseal|" + (parts.length > 1 ? parts[1] : ""));
                 default -> {}
             }
         });

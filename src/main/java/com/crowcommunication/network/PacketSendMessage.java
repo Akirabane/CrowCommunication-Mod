@@ -59,14 +59,12 @@ public class PacketSendMessage {
 
             List<ServerPlayer> validRecipients = new ArrayList<>();
             List<String> rejected = new ArrayList<>();
-            List<ServerPlayer> tooFar = new ArrayList<>();
             for (String name : targets) {
                 ServerPlayer r = CorbeauManager.findPlayer(server, sender, name);
                 if (r == null) { rejected.add(name); continue; }
                 if (r == sender) continue; // garde absolue contre l'auto-envoi
-                if (CorbeauManager.senderDistance(sender, r) > CorbeauManager.MAX_DELIVERY_DISTANCE) {
-                    tooFar.add(r); continue;
-                }
+                // Distance > 1500 : on laisse partir le corbeau quand même, visible.
+                // À l'arrivée, 50% de chance de revenir à l'expéditeur, 50% d'être perdu.
                 validRecipients.add(r);
             }
 
@@ -74,25 +72,9 @@ public class PacketSendMessage {
                 sender.sendSystemMessage(Component.literal(
                     "§c§oLe corbeau ne connaît personne sous le nom §f" + n + "§c."));
             }
-            // Tentative d'usurpation : résolue UNE fois ici, puis appliquée à toutes les livraisons
-            // (y compris aux pigeons perdus qui seront programmés ci-dessous).
             String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
 
-            // Pigeons perdus : pour chaque destinataire hors de portée, programmer un drop différé.
-            // Aucun message au sender : silence total — la lettre se "perd dans les airs".
-            for (ServerPlayer tf : tooFar) {
-                CorbeauManager.scheduleLostPigeon(sender, displaySender, p.subject, p.body);
-                // Le message au sender reste identique à un envoi normal : pas d'indication d'échec
-                sender.sendSystemMessage(Component.literal(
-                    "§8§oUn corbeau s'envole vers §f" + tf.getGameProfile().getName()
-                    + "§8 — sa route sera longue."));
-            }
-
             if (validRecipients.isEmpty()) {
-                // Si TOUT a fini en pigeon perdu, on consomme quand même le cooldown et le papier
-                if (!tooFar.isEmpty()) {
-                    CorbeauManager.markSent(sender);
-                }
                 CorbeauManager.onLetterCancelled(sender);
                 return;
             }
@@ -127,6 +109,7 @@ public class PacketSendMessage {
             CorbeauManager.markSent(sender);
             CorbeauManager.onMessageSent(sender, validRecipients.size());
             CorbeauManager.assignOutgoingLetter(sender, p.subject, p.body, recipientNames, deliveryIds, delays, displaySender);
+            NetworkHandler.sendToClient(new PacketCloseCompose(), sender);
         });
         ctx.get().setPacketHandled(true);
     }
