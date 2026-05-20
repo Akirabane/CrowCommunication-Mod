@@ -125,6 +125,10 @@ public class CorbeauManager {
         int hoverSlot;
         /** Chunk actuellement forcé pour ce bird (Integer.MIN_VALUE = aucun). */
         int lastForcedCX = Integer.MIN_VALUE, lastForcedCZ = Integer.MIN_VALUE;
+        /** Tick (dans la phase OUTGOING porteur) auquel la lettre tombe silencieusement. -1 = pas de perte. */
+        long lossAtTick = -1;
+        /** Altitude de croisière courante, lissée pour éviter les sauts. -1 = non initialisée. */
+        double currentCruiseY = -1;
 
         Bird(Kind k, Mob c, ServerPlayer p, Vec3 origin) {
             this.kind = k; this.chicken = c; this.player = p; this.origin = origin;
@@ -580,6 +584,21 @@ public class CorbeauManager {
                 b.deliveryIds = new ArrayList<>(List.of(ids.get(idx)));
                 b.outgoingDurationTicks = delays.get(idx);
                 b.displaySender = displaySender;
+                // Tirage de perte en vol : fait au départ, résolu en plein vol (drop silencieux).
+                MinecraftServer lossSrv = b.player.getServer();
+                ServerPlayer lossRecip = (lossSrv != null) ? lossSrv.getPlayerList().getPlayerByName(b.recipientName) : null;
+                double lossDist = (lossRecip != null) ? senderDistance(b.player, lossRecip) : 0;
+                Level senderLvl = b.player.level();
+                boolean rainy = senderLvl.isRaining() || senderLvl.isThundering();
+                double distLossChance = Math.max(0.0, Math.min(1.0, (lossDist - MAX_DELIVERY_DISTANCE) / 1000.0));
+                boolean rainLost = rainy && b.player.getRandom().nextDouble() < 0.5;
+                boolean distLost = b.player.getRandom().nextDouble() < distLossChance;
+                if (rainLost || distLost) {
+                    long minTick = (long)(b.outgoingDurationTicks * 0.15);
+                    long maxTick = (long)(b.outgoingDurationTicks * 0.85);
+                    long range = Math.max(1, maxTick - minTick);
+                    b.lossAtTick = minTick + (long)(b.player.getRandom().nextDouble() * range);
+                }
             }
         }
     }
@@ -963,23 +982,31 @@ public class CorbeauManager {
                     && (b.kind == Kind.SUMMON || b.isReturn);
 
                 if (carryingLetter) {
-                    // Vol garanti sur toute la durée : montée vers la couche de croisière,
-                    // croisière horizontale tranquille, descente sur le destinataire vivant.
-                    // L'oiseau reste interceptable et ne disparaît qu'à l'instant pile de livraison.
+                    // Perte en vol : drop silencieux au tick prévu, sans prévenir personne.
+                    if (b.lossAtTick > 0 && b.ticks >= b.lossAtTick) {
+                        if (b.chicken.level() instanceof ServerLevel sl && b.outSubject != null && b.outBody != null) {
+                            String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                                ? b.displaySender : b.player.getGameProfile().getName();
+                            ItemStack letter = LetterRenderer.makeLetterItem(shown, b.outSubject, b.outBody);
+                            Vec3 lossPos = b.chicken.position();
+                            ItemEntity drop = new ItemEntity(sl, lossPos.x, lossPos.y, lossPos.z, letter);
+                            drop.setDeltaMovement(0, -0.1, 0);
+                            sl.addFreshEntity(drop);
+                        }
+                        DeliveryScheduler.cancelDeliveries(b.deliveryIds);
+                        b.chicken.discard();
+                        toRemove.add(b);
+                        return;
+                    }
+                    // Vol garanti sur toute la durée. L'oiseau reste interceptable.
                     MinecraftServer server = b.player.getServer();
                     ServerPlayer recipient = (server == null)
                         ? null : server.getPlayerList().getPlayerByName(b.recipientName);
                     Vec3 from = b.outgoingFrom != null ? b.outgoingFrom : b.chicken.position();
                     double targetX, targetZ, targetY;
-                    // Si le destinataire est abrité (cave/eau/maison fermée), on ne descend PAS.
-                    // Idem si un autre corbeau est déjà en WAITING avec ce destinataire : ce bird
-                    // entrera en HOVERING à l'arrivée, donc il doit rester en altitude de croisière
-                    // pendant tout l'OUTGOING — pas de plongeon visible avant de remonter.
+                    // Si le destinataire est abrité ou en interaction, rester en altitude.
                     boolean shelteredTarget = recipient != null && !b.isReturn
                                               && isRecipientSheltered(recipient);
-                    // willHover s'applique aussi aux retours (b.isReturn = true) : si le sender
-                    // est en train de composer une lettre quand son corbeau revient, le bird doit
-                    // rester en altitude pour entrer en HOVERING à l'arrivée, pas plonger.
                     boolean willHover = recipient != null && hasWaitingBirdFor(recipient);
                     boolean keepHigh = shelteredTarget || willHover;
                     if (recipient != null && !recipient.isRemoved()
@@ -994,29 +1021,55 @@ public class CorbeauManager {
                         targetZ = b.flyTo.z;
                         targetY = b.flyTo.y;
                     }
-                    double cruiseY = Math.max(100.0, Math.max(from.y, targetY) + 18.0);
+                    // Altitude de croisière : Y=100 par défaut. On détecte les obstacles
+                    // 20-80 blocs devant et on ajuste currentCruiseY lentement (pas de saut).
+                    if (b.currentCruiseY < 0) b.currentCruiseY = 100.0;
+                    double targetCruise = 100.0;
+                    if (b.chicken.level() instanceof ServerLevel cruiseSl) {
+                        Vec3 birdNow = b.chicken.position();
+                        Vec3 travelDir = new Vec3(targetX - birdNow.x, 0, targetZ - birdNow.z);
+                        double travelDist = travelDir.length();
+                        Vec3 travelNorm = travelDist > 1.0 ? travelDir.normalize() : Vec3.ZERO;
+                        // Lookahead 20-80 blocs devant (pas à la position courante pour éviter le bruit)
+                        for (int look = 20; look <= 80; look += 20) {
+                            Vec3 sample = birdNow.add(travelNorm.scale(look));
+                            BlockPos samplePos = BlockPos.containing(sample);
+                            if (!cruiseSl.isLoaded(samplePos)) continue;
+                            int h = cruiseSl.getHeight(
+                                net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
+                                samplePos.getX(), samplePos.getZ());
+                            targetCruise = Math.max(targetCruise, h + 30.0);
+                        }
+                    }
+                    // Montée : max 1.2 bl/tick — descente : max 0.25 bl/tick. Pas de saut.
+                    if (targetCruise > b.currentCruiseY) {
+                        b.currentCruiseY = Math.min(b.currentCruiseY + 1.2, targetCruise);
+                    } else {
+                        b.currentCruiseY = Math.max(b.currentCruiseY - 0.25, targetCruise);
+                    }
                     long total = Math.max(20L, b.outgoingDurationTicks);
                     double progress = Math.min(1.0, b.ticks / (double) total);
                     double kxz = easeInOut(progress);
                     double desiredX = from.x + (targetX - from.x) * kxz;
                     double desiredZ = from.z + (targetZ - from.z) * kxz;
                     double desiredY;
-                    if (progress < 0.20) {
-                        double k = progress / 0.20;
-                        desiredY = from.y + (cruiseY - from.y) * easeOutCubic(k);
-                    } else if (progress > 0.80) {
-                        double k = (progress - 0.80) / 0.20;
-                        desiredY = cruiseY + (targetY - cruiseY) * easeOutCubic(k);
+                    if (progress > 0.82 && !keepHigh) {
+                        double k = (progress - 0.82) / 0.18;
+                        desiredY = b.currentCruiseY + (targetY - b.currentCruiseY) * easeOutCubic(k);
                     } else {
-                        desiredY = cruiseY + Math.sin(b.ticks * 0.12) * 0.35;
+                        desiredY = b.currentCruiseY + Math.sin(b.ticks * 0.12) * 0.35;
                     }
+                    // Caps XZ et Y séparés : montée rapide (3.5 bl/t) pour éviter le terrain,
+                    // descente douce (2.0 bl/t), avance horizontale plafonnée à 2.5 bl/t.
                     Vec3 cur = b.chicken.position();
-                    Vec3 desired = new Vec3(desiredX, desiredY, desiredZ);
-                    Vec3 step = desired.subtract(cur);
-                    double stepLen = step.length();
-                    if (stepLen > 2.8) step = step.normalize().scale(2.8);
-                    Vec3 newPos = cur.add(step);
-                    Vec3 yawStep = new Vec3(desired.x - cur.x, 0, desired.z - cur.z);
+                    double dXZ = Math.sqrt((desiredX - cur.x) * (desiredX - cur.x) + (desiredZ - cur.z) * (desiredZ - cur.z));
+                    double dY = desiredY - cur.y;
+                    double stepXZ = Math.min(dXZ, 2.5);
+                    double stepY = dY > 0 ? Math.min(dY, 3.5) : Math.max(dY, -2.0);
+                    double nx = cur.x + (dXZ > 0.01 ? (desiredX - cur.x) / dXZ * stepXZ : 0);
+                    double nz = cur.z + (dXZ > 0.01 ? (desiredZ - cur.z) / dXZ * stepXZ : 0);
+                    Vec3 newPos = new Vec3(nx, cur.y + stepY, nz);
+                    Vec3 yawStep = new Vec3(desiredX - cur.x, 0, desiredZ - cur.z);
                     float yaw = yawStep.lengthSqr() > 0.01 ? computeYaw(yawStep) : b.chicken.getYRot();
                     b.chicken.moveTo(newPos.x, newPos.y, newPos.z, yaw, -10f);
                     forceChunkAround(b);
@@ -1461,47 +1514,6 @@ public class CorbeauManager {
         b.outBody = null;
         b.outgoingDurationTicks = 0;
         b.deliveryIds = null;
-
-        // Risques de perte du corbeau, cumulés (deux tirages indépendants) :
-        //  • Pluie/orage à l'arrivée  → 50 % de chance que la lettre soit lâchée
-        //  • Distance > 1500 blocs    → 5 % par tranche de 100 blocs au-delà
-        //                               (1500 = 0 %, 2500 = 100 %)
-        // Dans les deux cas : la lettre tombe sur place, le corbeau disparaît.
-        if (!wasReturn && b.outgoingFrom != null) {
-            double traveled = b.outgoingFrom.distanceTo(recipient.position());
-            Level lvl = b.chicken.level();
-            boolean rainy = lvl.isRaining() || lvl.isThundering();
-            double distLossChance = Math.max(0.0, Math.min(1.0, (traveled - 1500.0) / 1000.0));
-            boolean rainLost = rainy && b.chicken.getRandom().nextDouble() < 0.5;
-            boolean distLost = b.chicken.getRandom().nextDouble() < distLossChance;
-            if (rainLost || distLost) {
-                // Perdu : la lettre tombe sur place, le corbeau s'évapore
-                if (b.chicken.level() instanceof ServerLevel sl && subject != null && body != null) {
-                    String shown = (b.displaySender != null && !b.displaySender.isBlank())
-                        ? b.displaySender : senderName;
-                    ItemStack letter = LetterRenderer.makeLetterItem(shown, subject, body);
-                    Vec3 pos = b.chicken.position();
-                    ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
-                    drop.setDeltaMovement(0, -0.05, 0);
-                    sl.addFreshEntity(drop);
-                }
-                // Indice RP à l'expéditeur s'il est en ligne
-                MinecraftServer srv = b.chicken.level() instanceof ServerLevel sl2 ? sl2.getServer() : null;
-                if (srv != null) {
-                    ServerPlayer origSender = srv.getPlayerList().getPlayerByName(senderName);
-                    if (origSender != null && !origSender.isRemoved()) {
-                        String reason = rainLost
-                            ? "§9§oLa pluie a eu raison de ton corbeau — la lettre est tombée quelque part en chemin."
-                            : "§8§oTon corbeau s'est égaré dans les vents — la lettre est tombée loin de sa destination.";
-                        origSender.sendSystemMessage(Component.literal(reason));
-                    }
-                }
-                poof(b.chicken);
-                b.chicken.discard();
-                toRemove.add(b);
-                return;
-            }
-        }
 
         // Décision d'arrivée selon l'état d'abri du destinataire :
         //  EXPOSED          → descente et livraison normales
