@@ -22,18 +22,25 @@ public class PacketSendMessage {
     private final String target;
     private final String subject;
     private final String body;
-    /** Pseudo à usurper si le QTE a été réussi côté client. Vide si pas d'usurpation. */
+    /** Pseudo cible d'usurpation, vide si pas de tentative. */
     private final String forgeName;
+    /** Nombre de manches QTE réussies côté client (0..3). */
+    private final int qteRounds;
 
     public PacketSendMessage(String target, String subject, String body) {
-        this(target, subject, body, "");
+        this(target, subject, body, "", 0);
     }
 
     public PacketSendMessage(String target, String subject, String body, String forgeName) {
+        this(target, subject, body, forgeName, 0);
+    }
+
+    public PacketSendMessage(String target, String subject, String body, String forgeName, int qteRounds) {
         this.target = target == null ? "" : target;
         this.subject = subject == null ? "" : subject;
         this.body = body == null ? "" : body;
         this.forgeName = forgeName == null ? "" : forgeName;
+        this.qteRounds = Math.max(0, Math.min(3, qteRounds));
     }
 
     public static void encode(PacketSendMessage p, FriendlyByteBuf buf) {
@@ -41,10 +48,11 @@ public class PacketSendMessage {
         buf.writeUtf(p.subject, 80);
         buf.writeUtf(p.body, 2000);
         buf.writeUtf(p.forgeName, 32);
+        buf.writeByte(p.qteRounds);
     }
 
     public static PacketSendMessage decode(FriendlyByteBuf buf) {
-        return new PacketSendMessage(buf.readUtf(32), buf.readUtf(80), buf.readUtf(2000), buf.readUtf(32));
+        return new PacketSendMessage(buf.readUtf(32), buf.readUtf(80), buf.readUtf(2000), buf.readUtf(32), buf.readByte());
     }
 
     public static void handle(PacketSendMessage p, Supplier<NetworkEvent.Context> ctx) {
@@ -72,7 +80,7 @@ public class PacketSendMessage {
                 sender.sendSystemMessage(Component.literal(
                     "§c§oLe corbeau ne connaît personne sous le nom §f" + n + "§c."));
             }
-            String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName);
+            String displaySender = CorbeauManager.resolveDisplaySender(sender, p.forgeName, p.qteRounds);
 
             if (validRecipients.isEmpty()) {
                 CorbeauManager.onLetterCancelled(sender);

@@ -24,10 +24,17 @@ public final class LetterViewOpener {
 
         WebBridge bridge = new WebBridge(reason -> {
             if (reason.startsWith("reseal|")) {
-                String newSender = reason.substring("reseal|".length()).trim();
+                // Format : reseal|<newSender>|<qteRounds>
+                String rest = reason.substring("reseal|".length());
+                String[] parts = rest.split("\\|", 2);
+                String newSender = parts[0].trim();
+                int qteRounds = 0;
+                if (parts.length > 1) {
+                    try { qteRounds = Integer.parseInt(parts[1].trim()); } catch (NumberFormatException ignored) {}
+                }
                 if (!newSender.isEmpty()) {
                     com.crowcommunication.network.NetworkHandler.sendToServer(
-                        new com.crowcommunication.network.PacketResealLetter(newSender));
+                        new com.crowcommunication.network.PacketResealLetter(newSender, qteRounds));
                 }
             }
             mc.setScreen(null);

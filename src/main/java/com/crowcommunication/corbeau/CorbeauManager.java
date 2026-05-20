@@ -265,9 +265,14 @@ public class CorbeauManager {
         return ForgerySystem.cooldownRemainingTicks(p);
     }
 
-    /** Façade vers {@link ForgerySystem#resolveDisplaySender(ServerPlayer, String)}. */
+    /** Façade legacy : équivaut à un QTE plein (3 manches). À éviter dans le code nouveau. */
     public static String resolveDisplaySender(ServerPlayer sender, String forgeName) {
-        return ForgerySystem.resolveDisplaySender(sender, forgeName);
+        return ForgerySystem.resolveDisplaySender(sender, forgeName, 3);
+    }
+
+    /** Façade vers {@link ForgerySystem#resolveDisplaySender(ServerPlayer, String, int)}. */
+    public static String resolveDisplaySender(ServerPlayer sender, String forgeName, int qteRounds) {
+        return ForgerySystem.resolveDisplaySender(sender, forgeName, qteRounds);
     }
 
     public static void setPendingGroup(ServerPlayer p, List<String> names) {
@@ -305,15 +310,29 @@ public class CorbeauManager {
                 "§c§oLe service du corbeau n'est pas encore prêt. Patiente quelques instants."));
             return;
         }
-        // Refus s'il existe déjà un corbeau d'envoi (SUMMON) en cours
+        // Refus s'il existe déjà un corbeau d'envoi en interaction (UI ouverte).
+        // En revanche, on nettoie agressivement les anciens SUMMON OUTGOING (annulés, en vol
+        // de repli) : ils ne doivent pas bloquer une nouvelle tentative ni s'accumuler.
+        List<Bird> stale = new ArrayList<>();
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
-                if (b.player == player && b.kind == Kind.SUMMON) {
+                if (b.player != player || b.kind != Kind.SUMMON) continue;
+                if (b.phase == Phase.WAITING) {
                     player.sendSystemMessage(Component.literal("§8§oUn corbeau est déjà en route."));
                     return;
                 }
+                // SUMMON OUTGOING (annulé ou départ déjà engagé) → poof, on repart propre
+                stale.add(b);
+            }
+            for (Bird old : stale) {
+                if (old.chicken != null) {
+                    poof(old.chicken);
+                    old.chicken.discard();
+                }
+                BIRDS.remove(old);
             }
         }
+        for (Bird old : stale) releaseForceChunk(old);
         // Cooldown anti-spam
         long cdLeft = cooldownRemainingTicks(player);
         if (cdLeft > 0 && !player.isCreative()) {
@@ -900,16 +919,20 @@ public class CorbeauManager {
                         ? null : server.getPlayerList().getPlayerByName(b.recipientName);
                     Vec3 from = b.outgoingFrom != null ? b.outgoingFrom : b.chicken.position();
                     double targetX, targetZ, targetY;
-                    // Si le destinataire est abrité (cave/eau/maison fermée), on ne descend PAS :
-                    // la cible Y reste haute (croisière) → le corbeau arrive au-dessus, déclenche
-                    // le U-turn dans arriveCarrying sans avoir plongé.
+                    // Si le destinataire est abrité (cave/eau/maison fermée), on ne descend PAS.
+                    // Idem si un autre corbeau est déjà en WAITING avec ce destinataire : ce bird
+                    // entrera en HOVERING à l'arrivée, donc il doit rester en altitude de croisière
+                    // pendant tout l'OUTGOING — pas de plongeon visible avant de remonter.
                     boolean shelteredTarget = recipient != null && !b.isReturn
                                               && isRecipientSheltered(recipient);
+                    boolean willHover = recipient != null && !b.isReturn
+                                        && hasWaitingBirdFor(recipient);
+                    boolean keepHigh = shelteredTarget || willHover;
                     if (recipient != null && !recipient.isRemoved()
                             && recipient.level().dimension().equals(b.chicken.level().dimension())) {
                         targetX = recipient.getX();
                         targetZ = recipient.getZ();
-                        targetY = shelteredTarget
+                        targetY = keepHigh
                             ? Math.max(from.y, recipient.getY() + 25.0)
                             : recipient.getY() + 1.6;
                     } else {
@@ -1383,27 +1406,43 @@ public class CorbeauManager {
         b.outgoingDurationTicks = 0;
         b.deliveryIds = null;
 
-        // Longue distance (>1500 blocs parcourus) : le corbeau est épuisé. 50% retour, 50% perdu.
+        // Risques de perte du corbeau, cumulés (deux tirages indépendants) :
+        //  • Pluie/orage à l'arrivée  → 50 % de chance que la lettre soit lâchée
+        //  • Distance > 1500 blocs    → 5 % par tranche de 100 blocs au-delà
+        //                               (1500 = 0 %, 2500 = 100 %)
+        // Dans les deux cas : la lettre tombe sur place, le corbeau disparaît.
         if (!wasReturn && b.outgoingFrom != null) {
             double traveled = b.outgoingFrom.distanceTo(recipient.position());
-            if (traveled > MAX_DELIVERY_DISTANCE) {
-                if (b.chicken.getRandom().nextBoolean()) {
-                    uTurnTowardSender(b, senderName, subject, body);
-                } else {
-                    // Perdu : la lettre tombe sur place, le corbeau s'évapore en silence
-                    if (b.chicken.level() instanceof ServerLevel sl && subject != null && body != null) {
-                        String shown = (b.displaySender != null && !b.displaySender.isBlank())
-                            ? b.displaySender : senderName;
-                        ItemStack letter = LetterRenderer.makeLetterItem(shown, subject, body);
-                        Vec3 pos = b.chicken.position();
-                        ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
-                        drop.setDeltaMovement(0, -0.05, 0);
-                        sl.addFreshEntity(drop);
-                    }
-                    poof(b.chicken);
-                    b.chicken.discard();
-                    toRemove.add(b);
+            Level lvl = b.chicken.level();
+            boolean rainy = lvl.isRaining() || lvl.isThundering();
+            double distLossChance = Math.max(0.0, Math.min(1.0, (traveled - 1500.0) / 1000.0));
+            boolean rainLost = rainy && b.chicken.getRandom().nextDouble() < 0.5;
+            boolean distLost = b.chicken.getRandom().nextDouble() < distLossChance;
+            if (rainLost || distLost) {
+                // Perdu : la lettre tombe sur place, le corbeau s'évapore
+                if (b.chicken.level() instanceof ServerLevel sl && subject != null && body != null) {
+                    String shown = (b.displaySender != null && !b.displaySender.isBlank())
+                        ? b.displaySender : senderName;
+                    ItemStack letter = LetterRenderer.makeLetterItem(shown, subject, body);
+                    Vec3 pos = b.chicken.position();
+                    ItemEntity drop = new ItemEntity(sl, pos.x, pos.y, pos.z, letter);
+                    drop.setDeltaMovement(0, -0.05, 0);
+                    sl.addFreshEntity(drop);
                 }
+                // Indice RP à l'expéditeur s'il est en ligne
+                MinecraftServer srv = b.chicken.level() instanceof ServerLevel sl2 ? sl2.getServer() : null;
+                if (srv != null) {
+                    ServerPlayer origSender = srv.getPlayerList().getPlayerByName(senderName);
+                    if (origSender != null && !origSender.isRemoved()) {
+                        String reason = rainLost
+                            ? "§9§oLa pluie a eu raison de ton corbeau — la lettre est tombée quelque part en chemin."
+                            : "§8§oTon corbeau s'est égaré dans les vents — la lettre est tombée loin de sa destination.";
+                        origSender.sendSystemMessage(Component.literal(reason));
+                    }
+                }
+                poof(b.chicken);
+                b.chicken.discard();
+                toRemove.add(b);
                 return;
             }
         }

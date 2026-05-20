@@ -86,21 +86,29 @@ public class WebBridge {
         Minecraft.getInstance().execute(() -> {
             if (payload.startsWith("sendMsg::")) {
                 String rest = payload.substring("sendMsg::".length());
-                String[] parts = rest.split("::", 4);
+                String[] parts = rest.split("::", 5);
                 if (parts.length >= 3) {
                     String forge = parts.length >= 4 ? parts[3] : "";
+                    int qteRounds = 0;
+                    if (parts.length >= 5) {
+                        try { qteRounds = Integer.parseInt(parts[4].trim()); } catch (NumberFormatException ignored) {}
+                    }
                     com.crowcommunication.network.NetworkHandler.sendToServer(
-                        new com.crowcommunication.network.PacketSendMessage(parts[0], parts[1], parts[2], forge));
+                        new com.crowcommunication.network.PacketSendMessage(parts[0], parts[1], parts[2], forge, qteRounds));
                     fireClose("sent");
                 }
                 return;
             }
-            String[] parts = payload.split("\\|", 2);
+            String[] parts = payload.split("\\|");
             switch (parts[0]) {
                 case "ready" -> {}
                 case "close" -> fireClose("close");
-                // "reseal|newSender" — transmis tel quel au callback du viewer de lettre
-                case "reseal" -> fireClose("reseal|" + (parts.length > 1 ? parts[1] : ""));
+                // "reseal|newSender|qteRounds" — transmis tel quel au callback du viewer de lettre
+                case "reseal" -> {
+                    String target = parts.length > 1 ? parts[1] : "";
+                    String qte    = parts.length > 2 ? parts[2] : "0";
+                    fireClose("reseal|" + target + "|" + qte);
+                }
                 default -> {}
             }
         });

@@ -19,17 +19,24 @@ import java.util.function.Supplier;
 public class PacketResealLetter {
 
     private final String forgeName;
+    private final int qteRounds;
 
     public PacketResealLetter(String forgeName) {
+        this(forgeName, 3);
+    }
+
+    public PacketResealLetter(String forgeName, int qteRounds) {
         this.forgeName = forgeName == null ? "" : forgeName;
+        this.qteRounds = Math.max(0, Math.min(3, qteRounds));
     }
 
     public static void encode(PacketResealLetter p, FriendlyByteBuf buf) {
         buf.writeUtf(p.forgeName, 32);
+        buf.writeByte(p.qteRounds);
     }
 
     public static PacketResealLetter decode(FriendlyByteBuf buf) {
-        return new PacketResealLetter(buf.readUtf(32));
+        return new PacketResealLetter(buf.readUtf(32), buf.readByte());
     }
 
     public static void handle(PacketResealLetter p, Supplier<NetworkEvent.Context> ctx) {
@@ -44,8 +51,8 @@ public class PacketResealLetter {
             String subject     = tag.getString("crow_subject");
             String body        = tag.getString("crow_body");
 
-            // Résolution du nouveau sender via ForgerySystem (cooldown 30 min, 30 %)
-            String displaySender = ForgerySystem.resolveDisplaySender(sender, p.forgeName);
+            // Résolution du nouveau sender via ForgerySystem (cooldown + score QTE)
+            String displaySender = ForgerySystem.resolveDisplaySender(sender, p.forgeName, p.qteRounds);
 
             if (!displaySender.equalsIgnoreCase(origSender)) {
                 // Réécriture de l'item en main

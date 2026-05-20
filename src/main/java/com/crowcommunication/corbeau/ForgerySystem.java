@@ -31,10 +31,26 @@ public final class ForgerySystem {
 
     /** Cooldown spécifique aux tentatives d'usurpation : 30 min. */
     public static final long FORGE_COOLDOWN_TICKS = 20L * 60L * 30L;
-    /** Probabilité serveur d'usurpation effective une fois le QTE réussi côté client. */
+    /** Probabilité serveur d'usurpation effective une fois le QTE 3 manches réussi. */
     public static final double FORGE_SUCCESS_CHANCE = 0.30;
 
     private static final Map<UUID, Long> LAST_FORGE_ATTEMPT = new ConcurrentHashMap<>();
+
+    /** Mélange aléatoire (Fisher–Yates) des lettres d'un nom pour obtenir un anagramme. */
+    private static String anagram(String name, net.minecraft.util.RandomSource rng) {
+        if (name == null || name.length() < 2) return name;
+        char[] chars = name.toCharArray();
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = rng.nextInt(i + 1);
+            char tmp = chars[i]; chars[i] = chars[j]; chars[j] = tmp;
+        }
+        String result = new String(chars);
+        // Évite anagramme identique au nom original (statistiquement rare mais possible)
+        if (result.equals(name)) {
+            return new StringBuilder(name).reverse().toString();
+        }
+        return result;
+    }
 
     /** Cooldown d'usurpation restant en ticks pour ce joueur (0 si disponible). */
     public static long cooldownRemainingTicks(ServerPlayer p) {
@@ -46,20 +62,28 @@ public final class ForgerySystem {
     }
 
     /**
-     * Résout le nom à afficher au destinataire :
+     * Résout le nom à afficher au destinataire selon le score QTE :
      * <ul>
-     *   <li>{@code forgeName} vide → renvoie le vrai pseudo (pas de tentative)</li>
-     *   <li>{@code forgeName} = pseudo de l'expéditeur → renvoie le vrai pseudo (no-op)</li>
-     *   <li>Pseudo inconnu (ni en ligne, ni en ProfileCache) → tentative silencieuse, sans cooldown</li>
-     *   <li>Cooldown 30 min actif → renvoie le vrai pseudo + message d'avertissement, sans cooldown supplémentaire</li>
-     *   <li>Sinon → tirage 30 % ; le cooldown est consommé succès ou échec</li>
+     *   <li>{@code qteRounds} = 0 ou 1 → vrai pseudo (échec ou pas de tentative). Pas de cooldown.</li>
+     *   <li>{@code qteRounds} = 2 → anagramme du vrai pseudo (la plume a tremblé sur la fin). Cooldown 30 min.</li>
+     *   <li>{@code qteRounds} = 3 → tirage 30 % pseudo cible / 70 % anagramme du pseudo cible. Cooldown 30 min.</li>
      * </ul>
+     * Pour les cas avec cooldown actif : repli silencieux vers vrai pseudo, message d'avertissement.
+     * Pour pseudo cible inconnu : repli vers vrai pseudo, message d'avertissement.
      */
-    public static String resolveDisplaySender(ServerPlayer sender, String forgeName) {
+    public static String resolveDisplaySender(ServerPlayer sender, String forgeName, int qteRounds) {
         String real = sender.getGameProfile().getName();
         if (forgeName == null || forgeName.isBlank()) return real;
         String target = forgeName.trim();
         if (target.equalsIgnoreCase(real)) return real;
+
+        // 0 ou 1 manche → QTE raté, vrai nom, aucune autre conséquence
+        if (qteRounds <= 1) {
+            sender.sendSystemMessage(Component.literal(
+                "§8§oTa plume a tremblé dès le premier trait — la lettre part sous ton vrai nom."));
+            playForgeFeedback(sender, false);
+            return real;
+        }
 
         MinecraftServer server = sender.getServer();
         if (server == null) return real;
@@ -87,17 +111,35 @@ public final class ForgerySystem {
         }
         LAST_FORGE_ATTEMPT.put(sender.getUUID(), now);
 
-        boolean success = sender.getRandom().nextDouble() < FORGE_SUCCESS_CHANCE;
-        if (success) {
+        // 2 manches → anagramme du VRAI nom (échec partiel : la plume a fini par déraper)
+        if (qteRounds == 2) {
+            String shuffled = anagram(real, sender.getRandom());
+            sender.sendSystemMessage(Component.literal(
+                "§8§oTa plume a tremblé sur le dernier trait — la signature ressemble à un brouillon... §f"
+                + shuffled + "§8."));
+            playForgeFeedback(sender, false);
+            return shuffled;
+        }
+
+        // 3 manches → 30 % vrai sceau cible, 70 % anagramme du sceau cible
+        boolean perfect = sender.getRandom().nextDouble() < FORGE_SUCCESS_CHANCE;
+        if (perfect) {
             sender.sendSystemMessage(Component.literal(
                 "§6§oTon trait de plume imite à la perfection le sceau de §f" + target + "§6..."));
             playForgeFeedback(sender, true);
             return target;
         }
+        String shuffledTarget = anagram(target, sender.getRandom());
         sender.sendSystemMessage(Component.literal(
-            "§8§oTa tentative d'imiter le sceau de §f" + target + "§8 a raté — la lettre part sous ton vrai nom."));
+            "§e§oTu as réussi le rythme, mais l'encre a bavé... la signature ressemble à §f"
+            + shuffledTarget + "§e plutôt qu'à §f" + target + "§e."));
         playForgeFeedback(sender, false);
-        return real;
+        return shuffledTarget;
+    }
+
+    /** Façade 2-arg historique : équivaut à un QTE plein réussi. */
+    public static String resolveDisplaySender(ServerPlayer sender, String forgeName) {
+        return resolveDisplaySender(sender, forgeName, 3);
     }
 
     /** Effets RP du résultat d'usurpation — visibles uniquement par l'expéditeur. */

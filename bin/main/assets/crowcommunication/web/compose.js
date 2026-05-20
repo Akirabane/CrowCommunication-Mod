@@ -1,9 +1,9 @@
 let _seq = 0;
 window.pmod = {
   send(action, ...args) { console.log("PMOD::" + [action, ...args, ++_seq].join("|")); },
-  sendMessage(target, subject, body, forgeName) {
-    // Quatre champs séparés par :: — préserve les | dans le corps
-    console.log("PMOD::sendMsg::" + target + "::" + subject + "::" + body + "::" + (forgeName || ""));
+  sendMessage(target, subject, body, forgeName, qteRounds) {
+    // Cinq champs séparés par :: — préserve les | dans le corps. qteRounds = 0..3.
+    console.log("PMOD::sendMsg::" + target + "::" + subject + "::" + body + "::" + (forgeName || "") + "::" + (qteRounds | 0));
   },
   setState() {}
 };
@@ -75,8 +75,8 @@ function init() {
     if (forgeCheck.checked) setTimeout(() => forgeName.focus(), 80);
   });
 
-  function dispatchLetter(forged) {
-    pmod.sendMessage("", subjectEl.value.trim(), bodyEl.value.trim(), forged);
+  function dispatchLetter(forged, qteRounds) {
+    pmod.sendMessage("", subjectEl.value.trim(), bodyEl.value.trim(), forged, qteRounds || 0);
     sendBtn.disabled = true;
     sendBtn.textContent = "Envoyé...";
   }
@@ -90,13 +90,14 @@ function init() {
     if (forgeCheck.checked) {
       const target = forgeName.value.trim();
       if (!target) return showError("Indique le pseudo à usurper.");
-      // Lance le QTE — si réussi → envoi avec le pseudo, sinon → envoi normal (sous vrai nom)
-      runQTE(target, (success) => {
-        dispatchLetter(success ? target : "");
+      // Lance le QTE — on transmet toujours le pseudo cible + le nombre de manches réussies (0..3),
+      // le serveur décide du nom final (vrai/anagramme/cible) selon le score.
+      runQTE(target, (roundsPassed) => {
+        dispatchLetter(target, roundsPassed);
       });
       return;
     }
-    dispatchLetter("");
+    dispatchLetter("", 0);
   }
 
   function cancel() { pmod.send("close"); }
@@ -164,9 +165,9 @@ function runQTE(target, onDone) {
   const abortBtn = $("qteAbort");
 
   // Largeur en % de la barre : la zone-cible rétrécit à chaque manche
-  const zoneWidthsPct  = [14, 9, 5.5];
+  const zoneWidthsPct  = [14, 10, 7.5];
   // Vitesse en ms par cycle aller-retour : se réduit (= plus rapide)
-  const cyclePeriodMs  = [1400, 1100, 850];
+  const cyclePeriodMs  = [1400, 1150, 950];
   const TOTAL_ROUNDS = 3;
 
   let round = 0;
@@ -226,7 +227,7 @@ function runQTE(target, onDone) {
     feedback.textContent = round >= TOTAL_ROUNDS ? "Trois traits parfaits…" : "Bien joué — continue.";
     feedback.classList.add("good");
     cancelAnimationFrame(rafId);
-    if (round >= TOTAL_ROUNDS) { sndQTEWin(); return finish(true); }
+    if (round >= TOTAL_ROUNDS) { sndQTEWin(); return finish(round); }
     setTimeout(() => {
       feedback.classList.remove("good");
       startRound();
@@ -241,22 +242,23 @@ function runQTE(target, onDone) {
     feedback.textContent = "Ta plume a tremblé.";
     feedback.classList.add("bad");
     sndQTEFail();
-    setTimeout(() => finish(false), 600);
+    // À l'échec, on transmet le nombre de manches DÉJÀ réussies avant cette manche ratée.
+    setTimeout(() => finish(round), 600);
   }
 
   function abort() {
     if (finished) return;
     cancelAnimationFrame(rafId);
-    finish(false);
+    finish(round);
   }
 
-  function finish(success) {
+  function finish(roundsPassed) {
     finished = true;
     overlay.classList.add("hidden");
     document.removeEventListener("keydown", onKey);
     hitBtn.removeEventListener("click", hit);
     abortBtn.removeEventListener("click", abort);
-    onDone(success);
+    onDone(roundsPassed | 0);
   }
 
   function onKey(e) {

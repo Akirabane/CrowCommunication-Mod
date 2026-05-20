@@ -42,12 +42,9 @@ function init() {
   resealBtn.addEventListener("click", () => {
     const target = forgeName.value.trim();
     if (!target) return showError("Indique le pseudo à usurper.");
-    runQTE(target, (success) => {
-      if (success) {
-        pmod.send("reseal", target);
-      } else {
-        pmod.send("close");
-      }
+    // On envoie toujours la tentative de reseal avec le pseudo cible et le score (0..3).
+    runQTE(target, (roundsPassed) => {
+      pmod.send("reseal", target, roundsPassed | 0);
     });
   });
 
@@ -89,7 +86,7 @@ function runQTE(target, onDone) {
   const overlay  = $("qteOverlay"), bar = $("qteBar"), zone = $("qteZone");
   const marker   = $("qteMarker"), feedback = $("qteFeedback"), roundEl = $("qteRound");
   const hitBtn   = $("qteHit"), abortBtn = $("qteAbort");
-  const zoneWidthsPct = [14, 9, 5.5], cyclePeriodMs = [1400, 1100, 850];
+  const zoneWidthsPct = [14, 10, 7.5], cyclePeriodMs = [1400, 1150, 950];
   const TOTAL_ROUNDS = 3;
   let round = 0, rafId = null, cycleStart = 0, finished = false;
 
@@ -118,20 +115,20 @@ function runQTE(target, onDone) {
     if (finished) return;
     const m = parseFloat(marker.style.left) || 0;
     const l = parseFloat(zone.style.left), w = parseFloat(zone.style.width);
-    if (m < l || m > l + w) { sndMiss(); flashZone(zone, "bad"); cancelAnimationFrame(rafId); feedback.textContent = "Ta plume a tremblé."; feedback.classList.add("bad"); sndQTEFail(); return setTimeout(() => finish(false), 600); }
+    if (m < l || m > l + w) { sndMiss(); flashZone(zone, "bad"); cancelAnimationFrame(rafId); feedback.textContent = "Ta plume a tremblé."; feedback.classList.add("bad"); sndQTEFail(); return setTimeout(() => finish(round), 600); }
     sndHit(); flashZone(zone, "good"); round++;
     feedback.textContent = round >= TOTAL_ROUNDS ? "Trois traits parfaits…" : "Bien joué — continue.";
     feedback.classList.add("good"); cancelAnimationFrame(rafId);
-    if (round >= TOTAL_ROUNDS) { sndQTEWin(); return finish(true); }
+    if (round >= TOTAL_ROUNDS) { sndQTEWin(); return finish(round); }
     setTimeout(() => { feedback.classList.remove("good"); startRound(); }, 350);
   }
-  function abort() { if (finished) return; cancelAnimationFrame(rafId); finish(false); }
-  function finish(success) {
+  function abort() { if (finished) return; cancelAnimationFrame(rafId); finish(round); }
+  function finish(roundsPassed) {
     finished = true; overlay.classList.add("hidden");
     document.removeEventListener("keydown", onKey);
     hitBtn.removeEventListener("click", hit);
     abortBtn.removeEventListener("click", abort);
-    onDone(success);
+    onDone(roundsPassed | 0);
   }
   function onKey(e) {
     if (e.key === " " || e.code === "Space") { e.preventDefault(); hit(); }
