@@ -197,6 +197,16 @@ public class CorbeauManager {
     private static final Map<UUID, Long> LAST_SEND = new ConcurrentHashMap<>();
     /** Liste de destinataires en attente pour le prochain envoi d'un joueur (après /corbeau-groupe). */
     private static final Map<UUID, List<String>> PENDING_GROUP = new ConcurrentHashMap<>();
+    /** Lettre déjà rédigée tenue en main, consommée à /corbeau et confiée au corbeau à son arrivée. */
+    private static final Map<UUID, LetterFromHand> LETTERS_FROM_HAND = new ConcurrentHashMap<>();
+
+    /** Contenu d'une lettre item NBT déjà rédigée, en attente d'être confiée au corbeau messager. */
+    private static final class LetterFromHand {
+        final String displaySender;
+        final String subject;
+        final String body;
+        LetterFromHand(String s, String sub, String b) { this.displaySender = s; this.subject = sub; this.body = b; }
+    }
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
     private static final Map<UUID, Long> LAST_INTERCEPT_PING = new ConcurrentHashMap<>();
 
@@ -341,16 +351,34 @@ public class CorbeauManager {
                 "§c§oTes corbeaux ont besoin de souffler — reviens dans §f" + s + "§c secondes."));
             return;
         }
-        // Combien de papiers ? 1 par destinataire (groupe) ou 1 par défaut.
-        int needed = Math.max(1, peekPendingGroup(player).size());
-        if (!player.isCreative()) {
-            if (countPaper(player) < needed) {
-                player.sendSystemMessage(Component.literal(
-                    "§c§oIl te faut §f" + needed + "§c papier(s) pour envoyer cette missive."));
-                PENDING_GROUP.remove(player.getUUID()); // on annule le groupe sinon il reste en attente
-                return;
+        // Détection lettre déjà rédigée en main (NBT crow_sender = item lettre du mod).
+        // Si présente : on saute l'UI à l'arrivée, on consomme l'item maintenant pour
+        // éviter toute désync, et on dispatch directement la lettre telle quelle.
+        // Pas de coût papier (déjà payé à la rédaction initiale).
+        net.minecraft.world.item.ItemStack hand = player.getMainHandItem();
+        net.minecraft.nbt.CompoundTag handTag = hand.getTag();
+        boolean letterInHand = handTag != null && handTag.contains("crow_sender")
+                               && handTag.contains("crow_subject") && handTag.contains("crow_body");
+        if (letterInHand) {
+            LETTERS_FROM_HAND.put(player.getUUID(), new LetterFromHand(
+                handTag.getString("crow_sender"),
+                handTag.getString("crow_subject"),
+                handTag.getString("crow_body")));
+            hand.shrink(1);
+            player.sendSystemMessage(Component.literal(
+                "§8§oTu confies la lettre déjà rédigée au corbeau qui arrive — le sceau actuel sera conservé."));
+        } else {
+            // Combien de papiers ? 1 par destinataire (groupe) ou 1 par défaut.
+            int needed = Math.max(1, peekPendingGroup(player).size());
+            if (!player.isCreative()) {
+                if (countPaper(player) < needed) {
+                    player.sendSystemMessage(Component.literal(
+                        "§c§oIl te faut §f" + needed + "§c papier(s) pour envoyer cette missive."));
+                    PENDING_GROUP.remove(player.getUUID()); // on annule le groupe sinon il reste en attente
+                    return;
+                }
+                consumePaper(player, needed);
             }
-            consumePaper(player, needed);
         }
 
         if (isRecipientSheltered(player)) {
@@ -1016,8 +1044,9 @@ public class CorbeauManager {
             net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
             head.getX(), head.getZ());
         if (surfaceY - head.getY() <= 2) return ShelterState.EXPOSED;
-        // Scan court borné par surfaceY. On ignore canopée et matériaux d'habitation
-        // (bois sous toutes formes) → un corbeau passe par les fenêtres/cheminées.
+        // Scan court borné par surfaceY. On ignore uniquement canopée d'arbre (feuilles,
+        // bûches verticales, neige sur feuilles) — toute autre couverture solide, y compris
+        // bois travaillé (planches, escaliers, dalles), déclenche un abri.
         int maxY = Math.min(surfaceY + 1, level.getMaxBuildHeight());
         boolean foundSolid = false;
         for (int y = head.getY() + 1; y < maxY; y++) {
@@ -1025,12 +1054,6 @@ public class CorbeauManager {
             if (state.isAir()) continue;
             if (state.is(BlockTags.LEAVES) || state.is(BlockTags.LOGS)) continue;
             if (state.is(net.minecraft.world.level.block.Blocks.SNOW)) continue;
-            if (state.is(BlockTags.PLANKS)) continue;
-            if (state.is(BlockTags.WOODEN_STAIRS)) continue;
-            if (state.is(BlockTags.WOODEN_SLABS)) continue;
-            if (state.is(BlockTags.WOODEN_DOORS)) continue;
-            if (state.is(BlockTags.WOODEN_TRAPDOORS)) continue;
-            if (state.is(BlockTags.WOODEN_FENCES)) continue;
             foundSolid = true;
             break;
         }
@@ -1039,11 +1062,18 @@ public class CorbeauManager {
         return head.getY() >= 59 ? ShelterState.SURFACE_SHELTER : ShelterState.DEEP_SHELTER;
     }
 
-    /** @return {@code true} si un corbeau de livraison est déjà en interaction (WAITING) avec ce joueur. */
+    /**
+     * @return {@code true} si le joueur est déjà en interaction avec un corbeau : soit en train
+     *         de lire une lettre reçue (DELIVERY WAITING), soit en train d'en composer une
+     *         (SUMMON WAITING, UI MCEF ouverte). Un nouveau corbeau qui arrive doit alors
+     *         passer en HOVERING au-dessus, pas descendre.
+     */
     private static boolean hasWaitingBirdFor(ServerPlayer p) {
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
-                if (b.kind == Kind.DELIVERY && b.phase == Phase.WAITING && b.player == p) return true;
+                if (b.player != p || b.phase != Phase.WAITING) continue;
+                if (b.kind == Kind.DELIVERY) return true; // lettre reçue en cours de lecture
+                if (b.kind == Kind.SUMMON)   return true; // UI compose ouverte
             }
         }
         return false;
@@ -1547,8 +1577,15 @@ public class CorbeauManager {
         }
 
         if (b.kind == Kind.SUMMON) {
-            // Seul l'oiseau principal ouvre l'UI — les autres hovèrent en silence
+            // Seul l'oiseau principal traite la suite — les autres restent en WAITING silencieux
             if (b.isMain) {
+                // Lettre déjà rédigée en main (consommée lors du /corbeau) → dispatch direct,
+                // pas d'UI MCEF, sceau de l'item préservé tel quel (vrai, anagramme ou usurpé).
+                LetterFromHand fromHand = LETTERS_FROM_HAND.remove(b.player.getUUID());
+                if (fromHand != null) {
+                    dispatchLetterFromHand(b.player, fromHand.displaySender, fromHand.subject, fromHand.body);
+                    return;
+                }
                 String recipients = String.join(", ", peekPendingGroup(b.player));
                 int forgeCdSec = (int) (forgeCooldownRemainingTicks(b.player) / 20L);
                 NetworkHandler.sendToClient(new PacketOpenCompose(recipients, forgeCdSec), b.player);
@@ -1562,6 +1599,59 @@ public class CorbeauManager {
             }
             showLetterInChat(b);
         }
+    }
+
+    /**
+     * Dispatch d'une lettre déjà rédigée tenue en main, sans passer par l'UI MCEF.
+     * Équivalent serveur à {@code PacketSendMessage.handle} mais avec sender/subject/body
+     * pré-déterminés (issus du NBT de l'item lettre). Le sceau actuel est préservé : pas de
+     * nouveau QTE, pas de cooldown d'usurpation. La même lettre est envoyée à chaque destinataire
+     * du groupe en attente.
+     */
+    private static void dispatchLetterFromHand(ServerPlayer sender, String displaySender,
+                                                String subject, String body) {
+        MinecraftServer server = sender.getServer();
+        if (server == null) { onLetterCancelled(sender); return; }
+        List<String> targets = new ArrayList<>(takePendingGroup(sender));
+        List<ServerPlayer> validRecipients = new ArrayList<>();
+        List<String> rejected = new ArrayList<>();
+        for (String name : targets) {
+            ServerPlayer r = findPlayer(server, sender, name);
+            if (r == null) { rejected.add(name); continue; }
+            if (r == sender) continue;
+            validRecipients.add(r);
+        }
+        for (String n : rejected) {
+            sender.sendSystemMessage(Component.literal(
+                "§c§oLe corbeau ne connaît personne sous le nom §f" + n + "§c."));
+        }
+        if (validRecipients.isEmpty()) { onLetterCancelled(sender); return; }
+
+        List<UUID> deliveryIds = new ArrayList<>();
+        List<String> recipientNames = new ArrayList<>();
+        List<Long> delays = new ArrayList<>();
+        for (ServerPlayer recipient : validRecipients) {
+            long delayTicks = computeDeliveryDelayTicks(sender, recipient);
+            long delaySec = delayTicks / 20L;
+            UUID msgId = scheduleDelivery(server, recipient,
+                sender.getGameProfile().getName(), displaySender, subject, body, delayTicks);
+            deliveryIds.add(msgId);
+            recipientNames.add(recipient.getGameProfile().getName());
+            delays.add(delayTicks);
+            String prettyTime = delaySec < 60
+                ? delaySec + " s"
+                : (delaySec / 60) + " min " + (delaySec % 60) + " s";
+            sender.sendSystemMessage(Component.literal(
+                "§8§oUn corbeau s'envole vers §f" + recipient.getGameProfile().getName()
+                + "§8 — livraison estimée dans §f" + prettyTime + "§8."));
+            recordHistory(sender.getUUID(), new HistoryEntry(
+                System.currentTimeMillis(), true,
+                recipient.getGameProfile().getName(), subject, false, false));
+        }
+
+        markSent(sender);
+        onMessageSent(sender);
+        assignOutgoingLetter(sender, subject, body, recipientNames, deliveryIds, delays, displaySender);
     }
 
     /** Affiche la lettre dans le chat avec deux boutons cliquables vanilla. */
