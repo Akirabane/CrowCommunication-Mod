@@ -200,12 +200,16 @@ public class CorbeauManager {
     /** Lettre déjà rédigée tenue en main, consommée à /corbeau et confiée au corbeau à son arrivée. */
     private static final Map<UUID, LetterFromHand> LETTERS_FROM_HAND = new ConcurrentHashMap<>();
 
-    /** Contenu d'une lettre item NBT déjà rédigée, en attente d'être confiée au corbeau messager. */
+    /** Contenu d'une lettre item NBT « réservée » au /corbeau, consommée à l'arrivée du corbeau. */
     private static final class LetterFromHand {
         final String displaySender;
         final String subject;
         final String body;
-        LetterFromHand(String s, String sub, String b) { this.displaySender = s; this.subject = sub; this.body = b; }
+        /** Slot d'inventaire ciblé (main hand au moment du /corbeau), pour re-trouver l'item à l'arrivée. */
+        final int slotIndex;
+        LetterFromHand(String s, String sub, String b, int slot) {
+            this.displaySender = s; this.subject = sub; this.body = b; this.slotIndex = slot;
+        }
     }
     /** Dernier tick d'alerte d'interception émis pour un corbeau (anti-spam). */
     private static final Map<UUID, Long> LAST_INTERCEPT_PING = new ConcurrentHashMap<>();
@@ -256,6 +260,12 @@ public class CorbeauManager {
 
     public static void markSent(ServerPlayer p) {
         if (p.getServer() != null) LAST_SEND.put(p.getUUID(), (long) p.getServer().getTickCount());
+    }
+
+    /** Réinitialise tous les cooldowns du joueur (envoi + usurpation). Pour debug/op. */
+    public static void resetAllCooldowns(ServerPlayer p) {
+        LAST_SEND.remove(p.getUUID());
+        ForgerySystem.resetCooldown(p);
     }
 
     /**
@@ -321,8 +331,11 @@ public class CorbeauManager {
             return;
         }
         // Refus s'il existe déjà un corbeau d'envoi en interaction (UI ouverte).
-        // En revanche, on nettoie agressivement les anciens SUMMON OUTGOING (annulés, en vol
-        // de repli) : ils ne doivent pas bloquer une nouvelle tentative ni s'accumuler.
+        // Pour les SUMMON en phase OUTGOING : on ne touche QUE ceux sans lettre assignée
+        // (= vol de repli après annulation). Les SUMMON OUTGOING porteurs de lettre
+        // (outSubject != null) sont en train de livrer un courrier à leur destinataire — il
+        // faut les laisser terminer leur trajet, sinon la livraison fallback via
+        // DeliveryScheduler les fait ré-apparaître brusquement à destination.
         List<Bird> stale = new ArrayList<>();
         synchronized (BIRDS) {
             for (Bird b : BIRDS) {
@@ -331,8 +344,10 @@ public class CorbeauManager {
                     player.sendSystemMessage(Component.literal("§8§oUn corbeau est déjà en route."));
                     return;
                 }
-                // SUMMON OUTGOING (annulé ou départ déjà engagé) → poof, on repart propre
-                stale.add(b);
+                // SUMMON OUTGOING sans lettre = annulation/repli → poof. Avec lettre = laisser livrer.
+                if (b.outSubject == null) {
+                    stale.add(b);
+                }
             }
             for (Bird old : stale) {
                 if (old.chicken != null) {
@@ -343,18 +358,19 @@ public class CorbeauManager {
             }
         }
         for (Bird old : stale) releaseForceChunk(old);
-        // Cooldown anti-spam
+        // Cooldown anti-spam — appliqué quel que soit le mode de jeu (survie ou créatif).
+        // Pour debug : commande OP /corbeau-reset-cooldowns
         long cdLeft = cooldownRemainingTicks(player);
-        if (cdLeft > 0 && !player.isCreative()) {
+        if (cdLeft > 0) {
             long s = (cdLeft + 19) / 20;
             player.sendSystemMessage(Component.literal(
                 "§c§oTes corbeaux ont besoin de souffler — reviens dans §f" + s + "§c secondes."));
             return;
         }
         // Détection lettre déjà rédigée en main (NBT crow_sender = item lettre du mod).
-        // Si présente : on saute l'UI à l'arrivée, on consomme l'item maintenant pour
-        // éviter toute désync, et on dispatch directement la lettre telle quelle.
-        // Pas de coût papier (déjà payé à la rédaction initiale).
+        // On RÉSERVE le contenu (snapshot NBT + slot) mais on NE CONSOMME PAS l'item ici :
+        // la consommation et l'animation « le corbeau prend la lettre » se font à l'arrivée
+        // pour la cohérence RP. Si l'item a bougé/disparu entre-temps, on retombe sur l'UI.
         net.minecraft.world.item.ItemStack hand = player.getMainHandItem();
         net.minecraft.nbt.CompoundTag handTag = hand.getTag();
         boolean letterInHand = handTag != null && handTag.contains("crow_sender")
@@ -363,22 +379,21 @@ public class CorbeauManager {
             LETTERS_FROM_HAND.put(player.getUUID(), new LetterFromHand(
                 handTag.getString("crow_sender"),
                 handTag.getString("crow_subject"),
-                handTag.getString("crow_body")));
-            hand.shrink(1);
+                handTag.getString("crow_body"),
+                player.getInventory().selected));
             player.sendSystemMessage(Component.literal(
-                "§8§oTu confies la lettre déjà rédigée au corbeau qui arrive — le sceau actuel sera conservé."));
+                "§8§oTu prépares la lettre déjà rédigée — le corbeau viendra la prendre dans ta main."));
         } else {
             // Combien de papiers ? 1 par destinataire (groupe) ou 1 par défaut.
+            // Coût appliqué en survie comme en créatif, pour parité de comportement.
             int needed = Math.max(1, peekPendingGroup(player).size());
-            if (!player.isCreative()) {
-                if (countPaper(player) < needed) {
-                    player.sendSystemMessage(Component.literal(
-                        "§c§oIl te faut §f" + needed + "§c papier(s) pour envoyer cette missive."));
-                    PENDING_GROUP.remove(player.getUUID()); // on annule le groupe sinon il reste en attente
-                    return;
-                }
-                consumePaper(player, needed);
+            if (countPaper(player) < needed) {
+                player.sendSystemMessage(Component.literal(
+                    "§c§oIl te faut §f" + needed + "§c papier(s) pour envoyer cette missive."));
+                PENDING_GROUP.remove(player.getUUID()); // on annule le groupe sinon il reste en attente
+                return;
             }
+            consumePaper(player, needed);
         }
 
         if (isRecipientSheltered(player)) {
@@ -397,11 +412,20 @@ public class CorbeauManager {
         player.sendSystemMessage(Component.literal(msg));
     }
 
-    public static void onMessageSent(ServerPlayer player) { startAllOutgoingSummon(player, 400, 80, true); }
+    public static void onMessageSent(ServerPlayer player) {
+        startAllOutgoingSummon(player, 400, 80, true);
+        // L'UI de composition vient de se fermer → tout corbeau en HOVERING au-dessus du joueur
+        // (qui patientait pendant la rédaction) doit maintenant pouvoir descendre.
+        promoteNextHovering(player);
+    }
 
     public static void onMessageSent(ServerPlayer player, int fanCount) { onMessageSent(player); }
 
-    public static void onLetterCancelled(ServerPlayer player) { startAllOutgoingSummon(player, 18, 16, false); }
+    public static void onLetterCancelled(ServerPlayer player) {
+        startAllOutgoingSummon(player, 18, 16, false);
+        // Idem en cas d'annulation : libérer les hovering en attente.
+        promoteNextHovering(player);
+    }
 
     /**
      * Fait décoller tous les oiseaux SUMMON en attente pour ce joueur.
@@ -953,8 +977,10 @@ public class CorbeauManager {
                     // pendant tout l'OUTGOING — pas de plongeon visible avant de remonter.
                     boolean shelteredTarget = recipient != null && !b.isReturn
                                               && isRecipientSheltered(recipient);
-                    boolean willHover = recipient != null && !b.isReturn
-                                        && hasWaitingBirdFor(recipient);
+                    // willHover s'applique aussi aux retours (b.isReturn = true) : si le sender
+                    // est en train de composer une lettre quand son corbeau revient, le bird doit
+                    // rester en altitude pour entrer en HOVERING à l'arrivée, pas plonger.
+                    boolean willHover = recipient != null && hasWaitingBirdFor(recipient);
                     boolean keepHigh = shelteredTarget || willHover;
                     if (recipient != null && !recipient.isRemoved()
                             && recipient.level().dimension().equals(b.chicken.level().dimension())) {
@@ -1579,11 +1605,21 @@ public class CorbeauManager {
         if (b.kind == Kind.SUMMON) {
             // Seul l'oiseau principal traite la suite — les autres restent en WAITING silencieux
             if (b.isMain) {
-                // Lettre déjà rédigée en main (consommée lors du /corbeau) → dispatch direct,
-                // pas d'UI MCEF, sceau de l'item préservé tel quel (vrai, anagramme ou usurpé).
+                // Lettre réservée au /corbeau ? On la reprend de l'inventaire, on joue
+                // l'animation « le corbeau prend la lettre dans son bec », puis dispatch.
                 LetterFromHand fromHand = LETTERS_FROM_HAND.remove(b.player.getUUID());
                 if (fromHand != null) {
-                    dispatchLetterFromHand(b.player, fromHand.displaySender, fromHand.subject, fromHand.body);
+                    if (consumeReservedLetter(b.player, fromHand)) {
+                        playLetterPickupAnimation(b);
+                        dispatchLetterFromHand(b.player, fromHand.displaySender, fromHand.subject, fromHand.body);
+                    } else {
+                        // Item disparu de l'inventaire entre-temps → on retombe sur l'UI vierge
+                        b.player.sendSystemMessage(Component.literal(
+                            "§c§oLa lettre que tu tenais n'est plus là — le corbeau attend une nouvelle rédaction."));
+                        String recipFallback = String.join(", ", peekPendingGroup(b.player));
+                        int cdFallback = (int) (forgeCooldownRemainingTicks(b.player) / 20L);
+                        NetworkHandler.sendToClient(new PacketOpenCompose(recipFallback, cdFallback), b.player);
+                    }
                     return;
                 }
                 String recipients = String.join(", ", peekPendingGroup(b.player));
@@ -1599,6 +1635,61 @@ public class CorbeauManager {
             }
             showLetterInChat(b);
         }
+    }
+
+    /**
+     * Tente de retirer la lettre réservée de l'inventaire du joueur à l'arrivée du corbeau.
+     * Cherche d'abord au slot mémorisé, puis dans tout l'inventaire si l'item a changé de place.
+     * Identifie l'item par ses NBT (mêmes sender + subject + body que le snapshot).
+     *
+     * @return {@code true} si une copie de la lettre a été consommée, {@code false} sinon.
+     */
+    private static boolean consumeReservedLetter(ServerPlayer p, LetterFromHand reserved) {
+        net.minecraft.world.entity.player.Inventory inv = p.getInventory();
+        // Tentative au slot mémorisé d'abord
+        int[] order = new int[inv.getContainerSize()];
+        int idx = 0;
+        if (reserved.slotIndex >= 0 && reserved.slotIndex < inv.getContainerSize()) {
+            order[idx++] = reserved.slotIndex;
+        }
+        for (int s = 0; s < inv.getContainerSize(); s++) {
+            if (s != reserved.slotIndex) order[idx++] = s;
+        }
+        for (int s : order) {
+            net.minecraft.world.item.ItemStack stack = inv.getItem(s);
+            if (stack.isEmpty()) continue;
+            net.minecraft.nbt.CompoundTag t = stack.getTag();
+            if (t == null) continue;
+            if (!reserved.displaySender.equals(t.getString("crow_sender"))) continue;
+            if (!reserved.subject.equals(t.getString("crow_subject"))) continue;
+            if (!reserved.body.equals(t.getString("crow_body"))) continue;
+            stack.shrink(1);
+            return true;
+        }
+        return false;
+    }
+
+    /** Petite animation RP : le corbeau « prend la lettre dans le bec » à l'arrivée. */
+    private static void playLetterPickupAnimation(Bird b) {
+        if (!(b.chicken.level() instanceof ServerLevel sl)) return;
+        Vec3 beak = b.chicken.position().add(0, b.chicken.getBbHeight() * 0.85, 0);
+        Vec3 hand = b.player.position().add(0, 1.0, 0);
+        // Particules d'item virevoltant entre la main du joueur et le bec
+        net.minecraft.world.item.ItemStack iconStack = LetterRenderer.makeLetterItem(
+            b.player.getGameProfile().getName(), "", "");
+        for (int i = 0; i < 6; i++) {
+            double t = i / 5.0;
+            double x = hand.x + (beak.x - hand.x) * t;
+            double y = hand.y + (beak.y - hand.y) * t + Math.sin(t * Math.PI) * 0.3;
+            double z = hand.z + (beak.z - hand.z) * t;
+            sl.sendParticles(new net.minecraft.core.particles.ItemParticleOption(
+                net.minecraft.core.particles.ParticleTypes.ITEM, iconStack),
+                x, y, z, 1, 0.02, 0.02, 0.02, 0.0);
+        }
+        sl.playSound(null, b.player.blockPosition(),
+            SoundEvents.ITEM_PICKUP, SoundSource.NEUTRAL, 0.6f, 1.2f);
+        sl.playSound(null, b.chicken.blockPosition(),
+            SoundEvents.PARROT_FLY, SoundSource.NEUTRAL, 0.5f, 0.9f);
     }
 
     /**

@@ -104,6 +104,20 @@ public class CorbeauCommand {
                     CorbeauManager.summonForPlayer(sp);
                     return 1;
                 })));
+
+        // /corbeau-reset-cooldowns — op uniquement (level 2). Réinitialise tous les cooldowns
+        // (envoi + usurpation) du joueur appelant. Utile pour debug/tests.
+        dispatcher.register(Commands.literal("corbeau-reset-cooldowns")
+            .requires(src -> src.hasPermission(2))
+            .executes(ctx -> {
+                if (!(ctx.getSource().getEntity() instanceof ServerPlayer sp)) {
+                    ctx.getSource().sendFailure(Component.literal("Cette commande doit être exécutée par un joueur."));
+                    return 0;
+                }
+                CorbeauManager.resetAllCooldowns(sp);
+                sp.sendSystemMessage(Component.literal("§a§oCooldowns corbeau réinitialisés (envoi + usurpation)."));
+                return 1;
+            }));
     }
 
     /** Suggère les pseudos en ligne (hors expéditeur) pour {@code /corbeau <pseudo>}. */

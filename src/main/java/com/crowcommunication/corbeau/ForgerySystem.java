@@ -52,6 +52,11 @@ public final class ForgerySystem {
         return result;
     }
 
+    /** Réinitialise le cooldown d'usurpation pour ce joueur. Pour debug/op. */
+    public static void resetCooldown(ServerPlayer p) {
+        if (p != null) LAST_FORGE_ATTEMPT.remove(p.getUUID());
+    }
+
     /** Cooldown d'usurpation restant en ticks pour ce joueur (0 si disponible). */
     public static long cooldownRemainingTicks(ServerPlayer p) {
         Long last = LAST_FORGE_ATTEMPT.get(p.getUUID());
